@@ -2,6 +2,8 @@
 
 Windows desktop app to browse Civitai images that include generation metadata / ComfyUI workflows, with a masonry gallery and **native drag-out into ComfyUI**.
 
+Repo: [fabwaseem/civitai-browser](https://github.com/fabwaseem/civitai-browser)
+
 ## Stack
 
 - Tauri 2 + React 19 + TypeScript + Vite
@@ -16,6 +18,7 @@ Windows desktop app to browse Civitai images that include generation metadata / 
 - Node.js 20+ and pnpm
 - Rust (rustup) + MSVC Build Tools on Windows
 - WebView2 (included on modern Windows 10/11)
+- [GitHub CLI](https://cli.github.com/) for releases (`winget install --id GitHub.cli` then `gh auth login`)
 
 ## Develop
 
@@ -27,49 +30,61 @@ pnpm tauri dev
 ## Features
 
 - Filters: sort, period, NSFW, username, model / version ID, base models
-- Default **Workflow only** mode (client-side filter + smart pagination fill)
-- Virtualized masonry grid with blurhash placeholders
-- Detail panel: prompt, negative, workflow JSON (copy / save)
+- Default **Has workflow** mode (client-side filter + smart pagination fill)
+- Virtualized masonry / grid with blurhash placeholders
+- Detail panel: models, LoRAs, prompt, negative, workflow JSON
 - **Drag an image onto the ComfyUI canvas** (caches original PNG first)
-- Download / reveal in Explorer
-- Optional Civitai API token in Settings
-- Check for updates on launch and from Settings
+- Download to disk; optional Civitai API token in Settings
+- Auto update check on launch + Settings → Check for updates
 
-## Release (local build → GitHub Releases)
+## One-time updater signing setup
 
-1. Generate a signing keypair once (keep the private key secret):
+```bash
+pnpm tauri signer generate -w %USERPROFILE%\.tauri\civitai-browser.key
+```
 
-   ```bash
-   pnpm tauri signer generate -w %USERPROFILE%\.tauri\civitai-browser.key
-   ```
+Put the **public** key into `src-tauri/tauri.conf.json` → `plugins.updater.pubkey` (already set for this repo). Keep the private key offline / local only.
 
-   Put the **public** key into `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`.
+## Release (single command)
 
-2. Bump `version` in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`.
+After you push your code changes to GitHub:
 
-3. Update the updater endpoint repo URL in `tauri.conf.json` if needed:
+```bash
+# bump patch (0.1.0 → 0.1.1), build, tag, create GitHub Release + latest.json
+pnpm release -- --bump patch --notes "What changed"
 
-   `https://github.com/fabwaseem/civitai-browser/releases/latest/download/latest.json`
+# or minor / major / exact version
+pnpm release -- --bump minor --notes "Theme + logo"
+pnpm release -- --version 0.2.0 --notes "Big release"
+```
 
-4. Build with the private key available:
+The script will:
 
-   ```bash
-   set TAURI_SIGNING_PRIVATE_KEY_PATH=%USERPROFILE%\.tauri\civitai-browser.key
-   pnpm tauri build
-   ```
+1. Bump versions in `package.json`, `tauri.conf.json`, `Cargo.toml`
+2. Build a signed NSIS installer + updater artifacts
+3. Write `latest.json` for the updater endpoint
+4. Commit, tag `vX.Y.Z`, and push
+5. Create the GitHub Release and upload installer, `.sig`, and `latest.json`
 
-5. Generate the updater manifest:
+Useful flags:
 
-   ```bash
-   pnpm release:manifest -- --repo fabwaseem/civitai-browser --notes "What changed"
-   ```
+| Flag | Meaning |
+| --- | --- |
+| `--skip-build` | Reuse an existing `tauri build` output |
+| `--skip-git` | Don’t commit/tag/push |
+| `--dry-run` | Print steps only |
 
-6. Create a GitHub Release tagged `vX.Y.Z` and upload:
-   - the NSIS installer / updater artifact from `src-tauri/target/release/bundle/nsis/`
-   - the matching `.sig` file
-   - `latest.json`
+Updater endpoint used by the app:
 
-7. Install an older build and confirm Settings → **Check for updates** finds the new release.
+`https://github.com/fabwaseem/civitai-browser/releases/latest/download/latest.json`
+
+### Verify update flow
+
+1. Install an older release (or keep a previous build installed)
+2. Run `pnpm release -- --bump patch --notes "Test update"`
+3. Launch the older app — within ~2s a mint banner offers **Update now**
+4. Or open Settings → **Check for updates**
+5. App downloads, installs, and relaunches on the new version
 
 ## Notes
 

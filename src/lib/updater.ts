@@ -1,35 +1,55 @@
-import { check } from "@tauri-apps/plugin-updater";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
-/** Returns a user-facing status string. Prompts before install when an update exists. */
+export type UpdateOffer = {
+  version: string;
+  notes: string;
+  update: Update;
+};
+
+/** Quiet network / missing-release errors on launch. */
+function isBenignCheckError(message: string) {
+  return /error sending request|failed to fetch|404|Could not fetch|not found|EOF|timed out/i.test(
+    message,
+  );
+}
+
+export async function probeForUpdate(): Promise<UpdateOffer | null> {
+  const update = await check();
+  if (!update) return null;
+  return {
+    version: update.version,
+    notes: update.body?.trim() || "A new version is available.",
+    update,
+  };
+}
+
+export async function installUpdateAndRelaunch(update: Update) {
+  await update.downloadAndInstall();
+  await relaunch();
+}
+
+/** Settings / manual path — confirm dialog then install. */
 export async function checkForAppUpdate(interactive: boolean): Promise<string> {
   try {
-    const update = await check();
-    if (!update) {
+    const offer = await probeForUpdate();
+    if (!offer) {
       return interactive ? "You're on the latest version." : "";
     }
 
-    const notes = update.body?.trim() || "A new version is available.";
     const shouldInstall = window.confirm(
-      `Update ${update.version} is available.\n\n${notes}\n\nDownload and install now?`,
+      `Update ${offer.version} is available.\n\n${offer.notes}\n\nDownload and install now?`,
     );
 
     if (!shouldInstall) {
-      return `Update ${update.version} available (skipped).`;
+      return `Update ${offer.version} available (skipped).`;
     }
 
-    await update.downloadAndInstall();
-    await relaunch();
+    await installUpdateAndRelaunch(offer.update);
     return "Update installed. Restarting…";
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    // Quiet on launch when releases endpoint is not ready yet
-    if (
-      !interactive &&
-      /error sending request|failed to fetch|404|Could not fetch/i.test(message)
-    ) {
-      return "";
-    }
+    if (!interactive && isBenignCheckError(message)) return "";
     return interactive ? `Update check failed: ${message}` : "";
   }
 }
