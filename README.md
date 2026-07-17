@@ -2,6 +2,8 @@
 
 Windows desktop app to browse Civitai images that include generation metadata / ComfyUI workflows, with a masonry gallery and **native drag-out into ComfyUI**.
 
+![Civitai Browser preview](preview.jpg)
+
 Repo: [fabwaseem/civitai-browser](https://github.com/fabwaseem/civitai-browser)
 
 ## Stack
@@ -68,11 +70,11 @@ The script will:
 
 Useful flags:
 
-| Flag | Meaning |
-| --- | --- |
+| Flag           | Meaning                                |
+| -------------- | -------------------------------------- |
 | `--skip-build` | Reuse an existing `tauri build` output |
-| `--skip-git` | Don’t commit/tag/push |
-| `--dry-run` | Print steps only |
+| `--skip-git`   | Don’t commit/tag/push                  |
+| `--dry-run`    | Print steps only                       |
 
 Updater endpoint used by the app:
 
