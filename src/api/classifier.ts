@@ -140,6 +140,204 @@ export function extractNegativePrompt(meta?: Record<string, unknown> | null) {
   return typeof value === "string" ? value : "";
 }
 
+export type UsedResourceKind = "checkpoint" | "lora" | "embedding" | "vae" | "other";
+
+export interface UsedResource {
+  kind: UsedResourceKind;
+  name: string;
+  version?: string;
+  weight?: number;
+  modelId?: number;
+  modelVersionId?: number;
+}
+
+function classifyResourceType(raw?: string | null): UsedResourceKind {
+  const t = (raw ?? "").toLowerCase();
+  if (!t) return "other";
+  if (t.includes("checkpoint") || t === "model" || t.includes("unet")) {
+    return "checkpoint";
+  }
+  if (t.includes("lora") || t.includes("lycoris") || t.includes("locon")) {
+    return "lora";
+  }
+  if (t.includes("embed") || t.includes("textual")) return "embedding";
+  if (t.includes("vae")) return "vae";
+  return "other";
+}
+
+function pushUnique(list: UsedResource[], item: UsedResource) {
+  const key = `${item.kind}|${item.name}|${item.version ?? ""}|${item.modelVersionId ?? ""}`;
+  if (list.some((x) => `${x.kind}|${x.name}|${x.version ?? ""}|${x.modelVersionId ?? ""}` === key)) {
+    return;
+  }
+  list.push(item);
+}
+
+function resourcesFromCivitaiMeta(meta: Record<string, unknown>): UsedResource[] {
+  const out: UsedResource[] = [];
+  const raw = meta.civitaiResources ?? meta.resources;
+  if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      if (!isPlainObject(entry)) continue;
+      const name =
+        (typeof entry.modelName === "string" && entry.modelName) ||
+        (typeof entry.name === "string" && entry.name) ||
+        (typeof entry.model === "string" && entry.model) ||
+        "";
+      if (!name) continue;
+      const version =
+        typeof entry.modelVersionName === "string"
+          ? entry.modelVersionName
+          : typeof entry.versionName === "string"
+            ? entry.versionName
+            : undefined;
+      const weight =
+        typeof entry.weight === "number"
+          ? entry.weight
+          : typeof entry.strength === "number"
+            ? entry.strength
+            : undefined;
+      const modelId =
+        typeof entry.modelId === "number" ? entry.modelId : undefined;
+      const modelVersionId =
+        typeof entry.modelVersionId === "number"
+          ? entry.modelVersionId
+          : undefined;
+      pushUnique(out, {
+        kind: classifyResourceType(
+          typeof entry.type === "string" ? entry.type : null,
+        ),
+        name,
+        version,
+        weight,
+        modelId,
+        modelVersionId,
+      });
+    }
+  }
+
+  const modelName =
+    (typeof meta.Model === "string" && meta.Model) ||
+    (typeof meta.model === "string" && meta.model) ||
+    "";
+  if (modelName && !out.some((r) => r.kind === "checkpoint")) {
+    pushUnique(out, { kind: "checkpoint", name: modelName });
+  }
+
+  return out;
+}
+
+function resourcesFromComfyPrompt(prompt: Record<string, unknown>): UsedResource[] {
+  const out: UsedResource[] = [];
+  for (const node of Object.values(prompt)) {
+    if (!isPlainObject(node)) continue;
+    const classType =
+      typeof node.class_type === "string" ? node.class_type : "";
+    const inputs = isPlainObject(node.inputs) ? node.inputs : {};
+
+    if (/checkpoint|unetloader/i.test(classType)) {
+      const name =
+        (typeof inputs.ckpt_name === "string" && inputs.ckpt_name) ||
+        (typeof inputs.unet_name === "string" && inputs.unet_name) ||
+        (typeof inputs.model_name === "string" && inputs.model_name) ||
+        "";
+      if (name) pushUnique(out, { kind: "checkpoint", name });
+    }
+
+    if (/lora/i.test(classType)) {
+      const name =
+        (typeof inputs.lora_name === "string" && inputs.lora_name) ||
+        (typeof inputs.lora === "string" && inputs.lora) ||
+        "";
+      if (!name) continue;
+      const weight =
+        typeof inputs.strength_model === "number"
+          ? inputs.strength_model
+          : typeof inputs.strength === "number"
+            ? inputs.strength
+            : undefined;
+      pushUnique(out, { kind: "lora", name, weight });
+    }
+
+    if (/vae/i.test(classType) && typeof inputs.vae_name === "string") {
+      pushUnique(out, { kind: "vae", name: inputs.vae_name });
+    }
+
+    if (/embedding|textual/i.test(classType)) {
+      const name =
+        (typeof inputs.embedding_name === "string" && inputs.embedding_name) ||
+        (typeof inputs.name === "string" && inputs.name) ||
+        "";
+      if (name) pushUnique(out, { kind: "embedding", name });
+    }
+  }
+  return out;
+}
+
+function resourcesFromComfyWorkflow(workflow: Record<string, unknown>): UsedResource[] {
+  const out: UsedResource[] = [];
+  const nodes = Array.isArray(workflow.nodes) ? workflow.nodes : [];
+  for (const node of nodes) {
+    if (!isPlainObject(node)) continue;
+    const type =
+      (typeof node.type === "string" && node.type) ||
+      (typeof node.class_type === "string" && node.class_type) ||
+      "";
+    const widgets = Array.isArray(node.widgets_values)
+      ? node.widgets_values
+      : [];
+    const firstStr = widgets.find((w) => typeof w === "string") as
+      | string
+      | undefined;
+
+    if (/checkpoint|unetloader/i.test(type) && firstStr) {
+      pushUnique(out, { kind: "checkpoint", name: firstStr });
+    } else if (/lora/i.test(type) && firstStr) {
+      const strength = widgets.find((w) => typeof w === "number") as
+        | number
+        | undefined;
+      pushUnique(out, { kind: "lora", name: firstStr, weight: strength });
+    } else if (/vae/i.test(type) && firstStr) {
+      pushUnique(out, { kind: "vae", name: firstStr });
+    }
+  }
+  return out;
+}
+
+/** Checkpoint / LoRA / related assets referenced by image meta or Comfy graph. */
+export function extractUsedResources(
+  meta?: Record<string, unknown> | null,
+): UsedResource[] {
+  if (!meta || !isPlainObject(meta)) return [];
+
+  const out: UsedResource[] = [];
+  for (const item of resourcesFromCivitaiMeta(meta)) pushUnique(out, item);
+
+  const bundle = extractComfyBundle(meta);
+  if (bundle?.prompt) {
+    for (const item of resourcesFromComfyPrompt(bundle.prompt)) {
+      pushUnique(out, item);
+    }
+  }
+  if (bundle?.workflow) {
+    for (const item of resourcesFromComfyWorkflow(bundle.workflow)) {
+      pushUnique(out, item);
+    }
+  }
+
+  // Prefer named kinds first in UI
+  const order: UsedResourceKind[] = [
+    "checkpoint",
+    "lora",
+    "embedding",
+    "vae",
+    "other",
+  ];
+  return out.sort(
+    (a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.name.localeCompare(b.name),
+  );
+}
+
 /** Pretty UI workflow JSON for copy/save (falls back to API prompt graph). */
 export function extractWorkflowJson(meta?: Record<string, unknown> | null) {
   const bundle = extractComfyBundle(meta);

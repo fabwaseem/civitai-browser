@@ -1,11 +1,16 @@
+import { useEffect, useRef, useState } from "react";
 import { Heart, MessageCircle, Workflow } from "lucide-react";
+import { BlurPlaceholder } from "@/components/BlurPlaceholder";
 import { galleryImageUrl, getMetaKind } from "@/api/classifier";
 import type { CivitaiImage } from "@/api/types";
 import { formatCount, cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/ui";
 
 /** Fixed CDN size — better cache hits, fast gallery paint. */
-const GALLERY_WIDTH = 320;
+const GALLERY_WIDTH = 450;
+
+/** Survives masonry remounts so we don't re-flash blurhash. */
+const loadedIds = new Set<number>();
 
 interface ImageCardProps {
   data: CivitaiImage;
@@ -24,47 +29,72 @@ export function ImageCard({
   onDragStart,
   onHover,
 }: ImageCardProps) {
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [loaded, setLoaded] = useState(() => loadedIds.has(data.id));
   const selected = useUiStore((s) => s.selectedId === data.id);
-  const preparing = useUiStore((s) => s.preparingId === data.id);
   const kind = getMetaKind(data);
   const src = galleryImageUrl(data, GALLERY_WIDTH);
   const masonryHeight =
-    width != null && data.width > 0
-      ? Math.max(100, Math.round((width * data.height) / data.width))
+    variant === "masonry" && width != null && data.width > 0
+      ? Math.max(1, Math.round((width * data.height) / data.width))
       : undefined;
+
+  useEffect(() => {
+    setLoaded(loadedIds.has(data.id));
+    const img = imgRef.current;
+    if (img?.complete && img.naturalWidth > 0) {
+      loadedIds.add(data.id);
+      setLoaded(true);
+    }
+  }, [data.id, src]);
+
+  function markLoaded() {
+    loadedIds.add(data.id);
+    setLoaded(true);
+  }
 
   return (
     <button
       type="button"
       draggable
       onMouseEnter={() => onHover?.(data)}
+      onPointerDown={() => onHover?.(data)}
       onDragStart={(e) => {
         e.preventDefault();
         void onDragStart(data);
       }}
       onClick={() => onSelect(data)}
       className={cn(
-        "group relative w-full overflow-hidden rounded text-left",
-        "bg-[var(--color-bg-elevated)] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)]",
-        selected && "shadow-[inset_0_0_0_2px_var(--color-accent)]",
+        // block + p-0 kills UA button padding and baseline gap under the card
+        "group relative m-0 block w-full appearance-none border-0 p-0 text-left",
+        "overflow-hidden rounded-sm bg-black/30",
+        selected && "outline outline-2 outline-[var(--color-accent)] -outline-offset-2",
         variant === "grid" && "aspect-square",
       )}
-      style={variant === "masonry" ? { height: masonryHeight } : undefined}
+      style={masonryHeight != null ? { height: masonryHeight, width: "100%" } : undefined}
     >
+      {!loaded && <BlurPlaceholder hash={data.hash} />}
+
       <img
+        ref={imgRef}
         src={src}
         alt=""
         width={data.width}
         height={data.height}
         decoding="async"
-        className="h-full w-full object-cover"
+        onLoad={markLoaded}
+        onError={markLoaded}
+        className={cn(
+          "pointer-events-none block h-full w-full object-cover transition-opacity duration-200",
+          loaded ? "opacity-100" : "opacity-0",
+        )}
         draggable={false}
       />
 
       {kind === "workflow" && (
         <span
           title="ComfyUI workflow available"
-          className="pointer-events-none absolute left-1 top-1 grid h-5 w-5 place-items-center rounded bg-black/55 text-[var(--color-workflow)] backdrop-blur-sm"
+          className="pointer-events-none absolute left-1 top-1 grid h-5 w-5 place-items-center rounded-sm bg-black/55 text-[var(--color-workflow)] backdrop-blur-sm"
         >
           <Workflow className="h-3 w-3" strokeWidth={2.25} />
         </span>
@@ -86,11 +116,6 @@ export function ImageCard({
         </div>
       </div>
 
-      {preparing && (
-        <div className="absolute inset-0 grid place-items-center bg-black/45 text-[11px] font-medium backdrop-blur-[2px]">
-          Preparing…
-        </div>
-      )}
     </button>
   );
 }

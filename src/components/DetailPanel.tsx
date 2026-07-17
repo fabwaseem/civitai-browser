@@ -1,39 +1,46 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Copy, Download, ExternalLink, Workflow, X } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { Button } from "@/components/ui/button";
+import { BlurPlaceholder } from "@/components/BlurPlaceholder";
 import {
   extractComfyBundle,
   extractNegativePrompt,
   extractPrompt,
+  extractUsedResources,
   extractWorkflowJson,
   galleryImageUrl,
   getMetaKind,
+  type UsedResource,
 } from "@/api/classifier";
 import { comfyExportArgs } from "@/api/comfyExport";
 import { saveImage } from "@/api/tauri";
 import type { CivitaiImage } from "@/api/types";
 import { useSettingsStore } from "@/stores/settings";
-import { formatCount } from "@/lib/utils";
+import { formatCount, cn } from "@/lib/utils";
 
 interface DetailPanelProps {
   image: CivitaiImage | null;
-  preparing: boolean;
   onClose: () => void;
   onDragStart: (image: CivitaiImage) => void;
 }
 
 export function DetailPanel({
   image,
-  preparing,
   onClose,
   onDragStart,
 }: DetailPanelProps) {
   const { apiToken, downloadDir, setDownloadDir } = useSettingsStore();
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [previewReady, setPreviewReady] = useState(false);
+
+  useEffect(() => {
+    setStatus(null);
+    setPreviewReady(false);
+  }, [image?.id]);
 
   if (!image) return null;
 
@@ -43,6 +50,13 @@ export function DetailPanel({
   const prompt = extractPrompt(current.meta);
   const negative = extractNegativePrompt(current.meta);
   const workflow = extractWorkflowJson(current.meta);
+  const resources = extractUsedResources(current.meta);
+  const checkpoints = resources.filter((r) => r.kind === "checkpoint");
+  const loras = resources.filter((r) => r.kind === "lora");
+  const otherResources = resources.filter(
+    (r) => r.kind !== "checkpoint" && r.kind !== "lora",
+  );
+  const previewSrc = galleryImageUrl(current, 640);
 
   async function copyText(text: string, label: string) {
     await navigator.clipboard.writeText(text);
@@ -138,18 +152,20 @@ export function DetailPanel({
             e.preventDefault();
             void onDragStart(current);
           }}
-          className="relative mb-3 block w-full overflow-hidden rounded border border-white/10 bg-black/30"
+          className="relative mb-3 flex h-56 w-full items-center justify-center overflow-hidden rounded border border-white/10 bg-black/40"
         >
+          {!previewReady && <BlurPlaceholder hash={current.hash} />}
           <img
-            src={galleryImageUrl(current, 640)}
+            key={current.id}
+            src={previewSrc}
             alt=""
-            className="max-h-56 w-full object-contain"
+            onLoad={() => setPreviewReady(true)}
+            onError={() => setPreviewReady(true)}
+            className={cn(
+              "relative max-h-56 w-full object-contain transition-opacity duration-200",
+              previewReady ? "opacity-100" : "opacity-0",
+            )}
           />
-          {preparing && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/50 text-xs">
-              Preparing…
-            </div>
-          )}
         </button>
 
         <div className="mb-3 grid grid-cols-2 gap-2">
@@ -173,6 +189,24 @@ export function DetailPanel({
             Civitai
           </Button>
         </div>
+
+        {checkpoints.length > 0 && (
+          <Section title="Models">
+            <ResourceList items={checkpoints} />
+          </Section>
+        )}
+
+        {loras.length > 0 && (
+          <Section title="LoRAs">
+            <ResourceList items={loras} />
+          </Section>
+        )}
+
+        {otherResources.length > 0 && (
+          <Section title="Other">
+            <ResourceList items={otherResources} />
+          </Section>
+        )}
 
         {prompt && (
           <Section
@@ -246,6 +280,51 @@ export function DetailPanel({
         )}
       </div>
     </aside>
+  );
+}
+
+function ResourceList({ items }: { items: UsedResource[] }) {
+  return (
+    <ul className="space-y-1.5">
+      {items.map((item) => (
+        <li
+          key={`${item.kind}-${item.name}-${item.version ?? ""}-${item.modelVersionId ?? ""}`}
+          className="text-xs leading-snug"
+        >
+          <div className="flex items-start justify-between gap-2">
+            {item.modelId ? (
+              <button
+                type="button"
+                className="min-w-0 text-left text-[var(--color-fg)] hover:text-[var(--color-accent)]"
+                onClick={() => {
+                  const url = item.modelVersionId
+                    ? `https://civitai.com/models/${item.modelId}?modelVersionId=${item.modelVersionId}`
+                    : `https://civitai.com/models/${item.modelId}`;
+                  void openUrl(url);
+                }}
+                title="Open on Civitai"
+              >
+                <span className="break-words font-medium">{item.name}</span>
+              </button>
+            ) : (
+              <span className="min-w-0 break-words font-medium text-[var(--color-fg)]">
+                {item.name}
+              </span>
+            )}
+            {typeof item.weight === "number" && (
+              <span className="shrink-0 text-[10px] text-[var(--color-muted)]">
+                ×{item.weight}
+              </span>
+            )}
+          </div>
+          {item.version && (
+            <p className="truncate text-[10px] text-[var(--color-muted)]">
+              {item.version}
+            </p>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 

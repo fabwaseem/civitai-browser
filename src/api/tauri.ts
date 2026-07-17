@@ -43,3 +43,19 @@ export function openPath(path: string) {
 export function clearImageCache() {
   return invoke<number>("clear_image_cache_cmd");
 }
+
+export interface DragReadyPaths {
+  imageId: number;
+  original: string;
+  preview: string;
+}
+
+/** Instant disk check — no downloads. */
+export function lookupDragReady(imageIds: number[]) {
+  return invoke<DragReadyPaths[]>("lookup_drag_ready_cmd", { imageIds });
+}
+
+/** Download/cache original + drag icon in one round-trip. */
+export function ensureDragReady(params: CacheImageArgs) {
+  return invoke<DragReadyPaths>("ensure_drag_ready_cmd", { params });
+}

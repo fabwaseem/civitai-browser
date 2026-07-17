@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactElement,
@@ -15,8 +16,9 @@ import { ImageCard } from "@/components/ImageCard";
 import type { CivitaiImage } from "@/api/types";
 import type { ViewMode } from "@/stores/ui";
 
-const GUTTER = 2;
-const COLUMN_WIDTH = 200;
+const GAP = 2;
+const MIN_COLUMN_WIDTH = 300;
+const MAX_COLUMNS = 5;
 
 interface GalleryProps {
   images: CivitaiImage[];
@@ -115,19 +117,16 @@ export function Gallery({
     );
   }
 
-  // Leave room for padding so the masonry never overflows horizontally
-  const masonryWidth = Math.max(0, viewport.width - 8);
-
   return (
     <div
       ref={scrollRef}
-      className="h-full overflow-x-hidden overflow-y-auto overscroll-contain px-1 py-1"
+      className="h-full overflow-x-hidden overflow-y-auto overscroll-contain"
     >
-      {viewMode === "masonry" && masonryWidth > 0 && (
+      {viewMode === "masonry" && viewport.width > 0 && (
         <MasonryGallery
           key={layoutKey}
           images={images}
-          width={masonryWidth}
+          width={viewport.width}
           height={viewport.height}
           scrollTop={scrollTop}
           renderItem={renderItem}
@@ -136,8 +135,8 @@ export function Gallery({
       )}
       {viewMode === "grid" && (
         <div
-          className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
-          style={{ gap: GUTTER }}
+          className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5"
+          style={{ gap: GAP }}
         >
           {images.map((image) => (
             <ImageCard
@@ -158,6 +157,17 @@ export function Gallery({
       )}
     </div>
   );
+}
+
+function layoutColumns(containerWidth: number) {
+  const cols = Math.min(
+    MAX_COLUMNS,
+    Math.max(1, Math.floor((containerWidth + GAP) / (MIN_COLUMN_WIDTH + GAP))),
+  );
+  const columnWidth = Math.floor((containerWidth - GAP * (cols - 1)) / cols);
+  // Exact width the positioner should use so no leftover pixels sit between columns
+  const usedWidth = cols * columnWidth + GAP * (cols - 1);
+  return { cols, columnWidth, usedWidth };
 }
 
 function MasonryGallery({
@@ -183,14 +193,20 @@ function MasonryGallery({
     items: CivitaiImage[],
   ) => void;
 }) {
+  const { cols, columnWidth, usedWidth } = useMemo(
+    () => layoutColumns(width),
+    [width],
+  );
+
   const positioner = usePositioner(
     {
-      width,
-      columnWidth: COLUMN_WIDTH,
-      columnGutter: GUTTER,
-      rowGutter: GUTTER,
+      width: usedWidth,
+      columnWidth,
+      columnCount: cols,
+      columnGutter: GAP,
+      rowGutter: GAP,
     },
-    [width],
+    [usedWidth, columnWidth, cols],
   );
   const resizeObserver = useResizeObserver(positioner);
 
@@ -201,8 +217,17 @@ function MasonryGallery({
     height: Math.max(height, 1),
     scrollTop,
     overscanBy: 2,
-    itemHeightEstimate: 280,
+    itemHeightEstimate: Math.round(columnWidth * 1.35),
     itemKey: (item, index) => item?.id ?? index,
+    // Kill inline baseline strut that adds phantom vertical space under cards
+    itemStyle: {
+      margin: 0,
+      padding: 0,
+      border: 0,
+      fontSize: 0,
+      lineHeight: 0,
+      overflow: "hidden",
+    },
     onRender,
     render: renderItem,
   });

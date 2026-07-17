@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheImageParams {
     pub image_id: i64,
@@ -171,14 +171,50 @@ pub fn cache_dir(app: &AppHandle) -> AppResult<PathBuf> {
     Ok(dir)
 }
 
+/// Fixed pixel size for OS drag ghost icons (always square).
+const DRAG_ICON_SIZE: u32 = 96;
+
 pub fn preview_dir(app: &AppHandle) -> AppResult<PathBuf> {
+    // v3: always 96×96 PNG drag icons (v2 stored variable CDN sizes)
     let dir = app
         .path()
         .app_cache_dir()
         .map_err(|e| AppError::Message(e.to_string()))?
-        .join("previews-v2");
+        .join("previews-v3");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+fn make_fixed_drag_icon(bytes: &[u8]) -> AppResult<Vec<u8>> {
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| AppError::Message(format!("Failed to decode drag preview: {e}")))?;
+    let icon = img.resize_to_fill(
+        DRAG_ICON_SIZE,
+        DRAG_ICON_SIZE,
+        image::imageops::FilterType::Triangle,
+    );
+    let mut encoded = Vec::new();
+    {
+        let mut cursor = std::io::Cursor::new(&mut encoded);
+        icon.write_to(&mut cursor, image::ImageFormat::Png)
+            .map_err(|e| AppError::Message(format!("Failed to encode drag preview: {e}")))?;
+    }
+    Ok(encoded)
+}
+
+fn drag_icon_path(app: &AppHandle, image_id: i64) -> AppResult<PathBuf> {
+    Ok(preview_dir(app)?.join(format!("{image_id}.png")))
+}
+
+/// Write/replace the fixed-size drag ghost for `image_id` from raw image bytes.
+fn ensure_drag_icon_bytes(app: &AppHandle, image_id: i64, bytes: &[u8]) -> AppResult<PathBuf> {
+    let path = drag_icon_path(app, image_id)?;
+    if path.exists() {
+        return Ok(path);
+    }
+    let icon_bytes = make_fixed_drag_icon(bytes)?;
+    std::fs::write(&path, icon_bytes)?;
+    Ok(path)
 }
 
 /// Remove cached originals and drag previews. Recreates empty dirs.
@@ -211,35 +247,88 @@ pub struct PreviewImageParams {
     pub api_token: Option<String>,
 }
 
-/// Small CDN derivative used only as the OS drag ghost icon.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DragReadyPaths {
+    pub image_id: i64,
+    pub original: String,
+    pub preview: String,
+}
+
+/// Fast disk lookup — no network. Returns only images that already have
+/// both the original file and the fixed drag icon on disk.
+pub fn lookup_drag_ready(app: &AppHandle, image_ids: &[i64]) -> AppResult<Vec<DragReadyPaths>> {
+    let originals = cache_dir(app)?;
+    let mut out = Vec::new();
+    for &image_id in image_ids {
+        let Some(original) = find_existing_cache(&originals, image_id) else {
+            continue;
+        };
+        let preview = drag_icon_path(app, image_id)?;
+        if !preview.exists() {
+            continue;
+        }
+        out.push(DragReadyPaths {
+            image_id,
+            original: original.to_string_lossy().into_owned(),
+            preview: preview.to_string_lossy().into_owned(),
+        });
+    }
+    Ok(out)
+}
+
+/// Download/cache original + fixed drag icon in one call.
+pub async fn ensure_drag_ready(
+    app: &AppHandle,
+    params: CacheImageParams,
+) -> AppResult<DragReadyPaths> {
+    let original = ensure_cached_image(app, params.clone()).await?;
+    let preview_path = drag_icon_path(app, params.image_id)?;
+    if !preview_path.exists() {
+        let bytes = std::fs::read(&original.path)?;
+        ensure_drag_icon_bytes(app, params.image_id, &bytes)?;
+    }
+    Ok(DragReadyPaths {
+        image_id: params.image_id,
+        original: original.path,
+        preview: preview_path.to_string_lossy().into_owned(),
+    })
+}
+
+/// Fixed-size square PNG used only as the OS drag ghost icon.
 pub async fn ensure_preview_image(
     app: &AppHandle,
     params: PreviewImageParams,
 ) -> AppResult<CachedImage> {
-    let dir = preview_dir(app)?;
-    if let Some(existing) = find_existing_cache(&dir, params.image_id) {
-        let ext = existing
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("jpg")
-            .to_ascii_lowercase();
+    let path = drag_icon_path(app, params.image_id)?;
+    if path.exists() {
         return Ok(CachedImage {
-            path: existing.to_string_lossy().into_owned(),
+            path: path.to_string_lossy().into_owned(),
             from_cache: true,
-            format: ext,
+            format: "png".into(),
         });
     }
 
+    // Prefer building the icon from an already-cached original (no extra download).
+    if let Ok(dir) = cache_dir(app) {
+        if let Some(existing) = find_existing_cache(&dir, params.image_id) {
+            let bytes = std::fs::read(&existing)?;
+            let icon_path = ensure_drag_icon_bytes(app, params.image_id, &bytes)?;
+            return Ok(CachedImage {
+                path: icon_path.to_string_lossy().into_owned(),
+                from_cache: false,
+                format: "png".into(),
+            });
+        }
+    }
+
     let downloaded = download_file(&params.url, params.api_token.as_deref()).await?;
-    let sniffed = sniff_ext(&downloaded.bytes, downloaded.content_type.as_deref());
-    let ext = if sniffed == "bin" { "jpg".into() } else { sniffed };
-    let path = dir.join(format!("{}.{}", params.image_id, ext));
-    std::fs::write(&path, downloaded.bytes)?;
+    let icon_path = ensure_drag_icon_bytes(app, params.image_id, &downloaded.bytes)?;
 
     Ok(CachedImage {
-        path: path.to_string_lossy().into_owned(),
+        path: icon_path.to_string_lossy().into_owned(),
         from_cache: false,
-        format: ext,
+        format: "png".into(),
     })
 }
 
@@ -262,6 +351,12 @@ pub async fn ensure_cached_image(
     // Prefer an already-correct PNG cache hit
     let png_path = dir.join(format!("{}.png", params.image_id));
     if png_path.exists() {
+        let icon = drag_icon_path(app, params.image_id)?;
+        if !icon.exists() {
+            if let Ok(bytes) = std::fs::read(&png_path) {
+                let _ = ensure_drag_icon_bytes(app, params.image_id, &bytes);
+            }
+        }
         return Ok(CachedImage {
             path: png_path.to_string_lossy().into_owned(),
             from_cache: true,
@@ -279,6 +374,12 @@ pub async fn ensure_cached_image(
             .unwrap_or("")
             .to_ascii_lowercase();
         if !(needs_png && ext != "png") {
+            let icon = drag_icon_path(app, params.image_id)?;
+            if !icon.exists() {
+                if let Ok(bytes) = std::fs::read(&existing) {
+                    let _ = ensure_drag_icon_bytes(app, params.image_id, &bytes);
+                }
+            }
             return Ok(CachedImage {
                 path: existing.to_string_lossy().into_owned(),
                 from_cache: true,
@@ -333,7 +434,9 @@ pub async fn ensure_cached_image(
             let _ = std::fs::remove_file(stale);
         }
     }
-    std::fs::write(&path, bytes)?;
+    std::fs::write(&path, &bytes)?;
+    // Same download → fixed drag ghost (no second network request)
+    let _ = ensure_drag_icon_bytes(app, params.image_id, &bytes);
 
     Ok(CachedImage {
         path: path.to_string_lossy().into_owned(),

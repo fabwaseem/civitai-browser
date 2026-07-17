@@ -30,7 +30,6 @@ function BrowserShell() {
   const filters = useFilterStore();
   const viewMode = useUiStore((s) => s.viewMode);
   const selectedId = useUiStore((s) => s.selectedId);
-  const preparingId = useUiStore((s) => s.preparingId);
   const setSelectedId = useUiStore((s) => s.setSelectedId);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -140,7 +139,6 @@ function BrowserShell() {
 
       <DetailPanel
         image={selected}
-        preparing={preparingId === selected?.id}
         onClose={() => {
           setSelected(null);
           setSelectedId(null);

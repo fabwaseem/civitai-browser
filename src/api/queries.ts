@@ -14,9 +14,9 @@ import type {
 import { useFilterStore } from "@/stores/filters";
 import { useSettingsStore } from "@/stores/settings";
 
-const PAGE_SIZE = 100;
-const TARGET_VISIBLE = 36;
-const MAX_FILL_PAGES = 4;
+const PAGE_SIZE = 200;
+const TARGET_VISIBLE = 60;
+const MAX_FILL_PAGES = 3;
 
 function parseOptionalInt(value: string): number | null {
   const trimmed = value.trim();

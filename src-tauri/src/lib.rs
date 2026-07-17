@@ -3,8 +3,9 @@ mod civitai;
 mod error;
 
 use cache::{
-    clear_image_cache, ensure_cached_image, ensure_preview_image, open_path, save_image_to_dir,
-    CacheImageParams, PreviewImageParams, SaveImageParams,
+    clear_image_cache, ensure_cached_image, ensure_drag_ready, ensure_preview_image,
+    lookup_drag_ready, open_path, save_image_to_dir, CacheImageParams, DragReadyPaths,
+    PreviewImageParams, SaveImageParams,
 };
 use civitai::{fetch_images, FetchImagesParams, ImagesResponse};
 use error::AppResult;
@@ -46,6 +47,19 @@ fn clear_image_cache_cmd(app: AppHandle) -> AppResult<u64> {
     clear_image_cache(&app)
 }
 
+#[tauri::command]
+fn lookup_drag_ready_cmd(app: AppHandle, image_ids: Vec<i64>) -> AppResult<Vec<DragReadyPaths>> {
+    lookup_drag_ready(&app, &image_ids)
+}
+
+#[tauri::command]
+async fn ensure_drag_ready_cmd(
+    app: AppHandle,
+    params: CacheImageParams,
+) -> AppResult<DragReadyPaths> {
+    ensure_drag_ready(&app, params).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -61,6 +75,8 @@ pub fn run() {
             fetch_civitai_images,
             ensure_cached_image_cmd,
             ensure_preview_image_cmd,
+            ensure_drag_ready_cmd,
+            lookup_drag_ready_cmd,
             save_image_cmd,
             open_path_cmd,
             clear_image_cache_cmd
