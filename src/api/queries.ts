@@ -1,5 +1,6 @@
 import {
   useInfiniteQuery,
+  keepPreviousData,
   type InfiniteData,
 } from "@tanstack/react-query";
 import { useMemo } from "react";
@@ -125,6 +126,8 @@ export function useImagesQuery() {
       ),
     getNextPageParam: (lastPage) =>
       lastPage.metadata?.nextCursor ?? undefined,
+    placeholderData: keepPreviousData,
+    retry: 1,
   });
 }
 

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { Store } from "@tauri-apps/plugin-store";
 import type { NsfwOption } from "@/api/types";
+import type { BlurNsfwFrom } from "@/lib/nsfw";
 import { joinPath } from "@/lib/utils";
 
 const STORE_FILE = "settings.json";
@@ -15,6 +16,10 @@ export interface SettingsState {
   maxConcurrentDownloads: number;
   confirmBeforeDelete: boolean;
   defaultNsfw: NsfwOption;
+  /** Soften / hide NSFW thumbs in the gallery */
+  blurNsfw: boolean;
+  /** Blur images at this level and above */
+  blurNsfwFrom: BlurNsfwFrom;
   hydrate: () => Promise<void>;
   setApiToken: (apiToken: string) => Promise<void>;
   setDownloadDir: (downloadDir: string) => Promise<void>;
@@ -22,6 +27,8 @@ export interface SettingsState {
   setMaxConcurrentDownloads: (n: number) => Promise<void>;
   setConfirmBeforeDelete: (confirmBeforeDelete: boolean) => Promise<void>;
   setDefaultNsfw: (defaultNsfw: NsfwOption) => Promise<void>;
+  setBlurNsfw: (blurNsfw: boolean) => Promise<void>;
+  setBlurNsfwFrom: (blurNsfwFrom: BlurNsfwFrom) => Promise<void>;
 }
 
 async function getStore() {
@@ -66,6 +73,8 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   maxConcurrentDownloads: 3,
   confirmBeforeDelete: true,
   defaultNsfw: "Soft",
+  blurNsfw: true,
+  blurNsfwFrom: "Mature",
   hydrate: async () => {
     try {
       const store = await getStore();
@@ -84,6 +93,12 @@ export const useSettingsStore = create<SettingsState>((set) => ({
         (await store.get<boolean>("confirmBeforeDelete")) ?? true;
       const defaultNsfw =
         (await store.get<NsfwOption>("defaultNsfw")) ?? "Soft";
+      const blurNsfw = (await store.get<boolean>("blurNsfw")) ?? true;
+      const savedFrom = await store.get<string>("blurNsfwFrom");
+      const blurNsfwFrom: BlurNsfwFrom =
+        savedFrom === "Soft" || savedFrom === "Mature" || savedFrom === "X"
+          ? savedFrom
+          : "Mature";
       set({
         apiToken,
         downloadDir,
@@ -91,6 +106,8 @@ export const useSettingsStore = create<SettingsState>((set) => ({
         maxConcurrentDownloads,
         confirmBeforeDelete,
         defaultNsfw,
+        blurNsfw,
+        blurNsfwFrom,
         hydrated: true,
       });
     } catch {
@@ -121,6 +138,14 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   setDefaultNsfw: async (defaultNsfw) => {
     set({ defaultNsfw });
     await persist("defaultNsfw", defaultNsfw);
+  },
+  setBlurNsfw: async (blurNsfw) => {
+    set({ blurNsfw });
+    await persist("blurNsfw", blurNsfw);
+  },
+  setBlurNsfwFrom: async (blurNsfwFrom) => {
+    set({ blurNsfwFrom });
+    await persist("blurNsfwFrom", blurNsfwFrom);
   },
 }));
 

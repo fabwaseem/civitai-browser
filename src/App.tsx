@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { FilterBar } from "@/components/FilterBar";
 import { Gallery } from "@/components/Gallery";
 import { GallerySkeleton } from "@/components/GallerySkeleton";
+import { GalleryError } from "@/components/GalleryError";
 import { DetailPanel } from "@/components/DetailPanel";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { DownloadsPanel } from "@/components/DownloadsPanel";
@@ -63,12 +64,11 @@ function BrowserShell() {
   const { beginDrag, prefetchImage, prepareSelected } = useImageDrag(images);
 
   useEffect(() => {
-    if (!query.isError) return;
-    notify.error(
-      (query.error as Error)?.message || "Failed to load images",
-      { id: "gallery-load-error" },
-    );
-  }, [query.isError, query.error]);
+    if (!query.isError || images.length > 0) return;
+    const msg = (query.error as Error)?.message?.trim();
+    if (!msg) return; // empty HMR blips — UI already explains
+    notify.error(msg, { id: "gallery-load-error" });
+  }, [query.isError, query.error, images.length]);
 
   const layoutKey = useMemo(
     () =>
@@ -135,23 +135,16 @@ function BrowserShell() {
           />
 
           <main className="min-h-0 flex-1">
-            {query.isLoading ? (
+            {query.isLoading && images.length === 0 ? (
               <div className="h-full overflow-hidden">
                 <GallerySkeleton viewMode={viewMode} />
               </div>
-            ) : query.isError ? (
-              <div className="grid h-full place-items-center gap-2 px-6 text-center text-sm">
-                <p className="text-[var(--color-danger)]">
-                  {(query.error as Error).message}
-                </p>
-                <button
-                  type="button"
-                  className="text-[var(--color-accent)] underline"
-                  onClick={() => void query.refetch()}
-                >
-                  Retry
-                </button>
-              </div>
+            ) : query.isError && images.length === 0 ? (
+              <GalleryError
+                error={query.error}
+                busy={query.isFetching}
+                onRetry={() => void query.refetch()}
+              />
             ) : (
               <Gallery
                 images={images}

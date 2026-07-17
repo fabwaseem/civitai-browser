@@ -7,8 +7,15 @@ import {
   type UpdateProgress,
 } from "@/lib/updater";
 import { Button } from "@/components/ui/button";
-import { formatBytes, cn } from "@/lib/utils";
+import { formatBytes, formatSpeed, cn } from "@/lib/utils";
 import { notify } from "@/lib/toast";
+
+function formatPercent(percent: number | null): string | null {
+  if (percent == null) return null;
+  return Number.isInteger(percent)
+    ? `${percent}%`
+    : `${percent.toFixed(1)}%`;
+}
 
 /** Launch check + opaque toast-style banner when an update is ready. */
 export function UpdateChecker() {
@@ -43,6 +50,7 @@ export function UpdateChecker() {
       downloaded: 0,
       total: null,
       percent: null,
+      speed: null,
     });
     try {
       await installUpdateAndRelaunch(offer.update, setProgress);
@@ -55,16 +63,38 @@ export function UpdateChecker() {
     }
   }
 
+  const percentLabel = formatPercent(progress?.percent ?? null);
   const phaseLabel =
     progress?.phase === "installing"
       ? "Installing…"
       : progress?.phase === "done"
         ? "Restarting…"
-        : progress?.percent != null
-          ? `Downloading ${progress.percent}%`
+        : percentLabel
+          ? `Downloading ${percentLabel}`
           : progress
             ? "Downloading…"
             : "Update now";
+
+  const detailLine = (() => {
+    if (!progress) return null;
+    if (progress.phase === "installing" || progress.phase === "done") {
+      return "Applying update…";
+    }
+    const parts: string[] = [];
+    if (progress.total) {
+      parts.push(
+        `${formatBytes(progress.downloaded)} / ${formatBytes(progress.total)}`,
+      );
+    } else if (progress.downloaded > 0) {
+      parts.push(formatBytes(progress.downloaded));
+    } else {
+      parts.push("Starting download…");
+    }
+    if (percentLabel) parts.push(percentLabel);
+    const speed = formatSpeed(progress.speed);
+    if (speed) parts.push(speed);
+    return parts.join(" · ");
+  })();
 
   return (
     <div className="pointer-events-none fixed inset-x-0 top-10 z-[200] flex justify-center px-3">
@@ -110,34 +140,31 @@ export function UpdateChecker() {
         </div>
 
         {progress && (
-          <div className="mt-2.5 space-y-1">
+          <div className="mt-2.5 space-y-1.5">
             <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
               <div
                 className={cn(
-                  "h-full rounded-full bg-[var(--color-accent)] transition-[width] duration-150",
+                  "h-full rounded-full bg-[var(--color-accent)]",
                   progress.percent == null &&
                     progress.phase === "downloading" &&
                     "w-1/3 animate-pulse",
                 )}
                 style={
                   progress.percent != null
-                    ? { width: `${progress.percent}%` }
+                    ? {
+                        width: `${progress.percent}%`,
+                        transition: "width 1s linear",
+                      }
                     : progress.phase === "installing" ||
                         progress.phase === "done"
-                      ? { width: "100%" }
+                      ? { width: "100%", transition: "width 0.3s ease-out" }
                       : undefined
                 }
               />
             </div>
-            <p className="text-[10px] tabular-nums text-muted">
-              {progress.phase === "installing" || progress.phase === "done"
-                ? "Applying update…"
-                : progress.total
-                  ? `${formatBytes(progress.downloaded)} / ${formatBytes(progress.total)}`
-                  : progress.downloaded > 0
-                    ? formatBytes(progress.downloaded)
-                    : "Starting download…"}
-            </p>
+            {detailLine && (
+              <p className="text-[10px] tabular-nums text-muted">{detailLine}</p>
+            )}
           </div>
         )}
       </div>

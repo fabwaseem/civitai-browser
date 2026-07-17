@@ -11,8 +11,13 @@ export type UpdateProgress = {
   phase: "downloading" | "installing" | "done";
   downloaded: number;
   total: number | null;
+  /** 0–100 with one decimal when known */
   percent: number | null;
+  /** Bytes/sec averaged over the last ~1s window */
+  speed: number | null;
 };
+
+const PROGRESS_TICK_MS = 1000;
 
 /** Quiet network / missing-release errors on launch. */
 function isBenignCheckError(message: string) {
@@ -31,39 +36,81 @@ export async function probeForUpdate(): Promise<UpdateOffer | null> {
   };
 }
 
+function exactPercent(downloaded: number, total: number | null): number | null {
+  if (total == null || total <= 0) return null;
+  const capped = Math.min(downloaded, total);
+  return Math.min(100, Math.round((capped / total) * 1000) / 10);
+}
+
 export async function installUpdateAndRelaunch(
   update: Update,
   onProgress?: (progress: UpdateProgress) => void,
 ) {
   let downloaded = 0;
   let total: number | null = null;
+  let speed: number | null = null;
 
-  const emit = (phase: UpdateProgress["phase"]) => {
-    onProgress?.({
-      phase,
-      downloaded,
-      total,
-      percent:
-        total && total > 0
-          ? Math.min(100, Math.round((downloaded / total) * 100))
-          : null,
-    });
+  let windowStart = performance.now();
+  let windowBytes = 0;
+  let lastEmit = 0;
+
+  const snapshot = (
+    phase: UpdateProgress["phase"],
+  ): UpdateProgress => ({
+    phase,
+    downloaded: total != null ? Math.min(downloaded, total) : downloaded,
+    total,
+    percent: exactPercent(downloaded, total),
+    speed: phase === "downloading" ? speed : null,
+  });
+
+  const emit = (phase: UpdateProgress["phase"], force = false) => {
+    const now = performance.now();
+    if (
+      !force &&
+      phase === "downloading" &&
+      now - lastEmit < PROGRESS_TICK_MS
+    ) {
+      return;
+    }
+    lastEmit = now;
+    onProgress?.(snapshot(phase));
+  };
+
+  const rollSpeed = (chunk: number) => {
+    const now = performance.now();
+    windowBytes += chunk;
+    const elapsed = now - windowStart;
+    if (elapsed >= PROGRESS_TICK_MS) {
+      speed = (windowBytes * 1000) / elapsed;
+      windowStart = now;
+      windowBytes = 0;
+    }
   };
 
   await update.downloadAndInstall((event: DownloadEvent) => {
     if (event.event === "Started") {
       downloaded = 0;
       total = event.data.contentLength ?? null;
-      emit("downloading");
+      speed = null;
+      windowStart = performance.now();
+      windowBytes = 0;
+      lastEmit = 0;
+      emit("downloading", true);
     } else if (event.event === "Progress") {
-      downloaded += event.data.chunkLength;
+      const chunk = event.data.chunkLength;
+      downloaded += chunk;
+      if (total != null && downloaded > total) downloaded = total;
+      rollSpeed(chunk);
       emit("downloading");
     } else if (event.event === "Finished") {
-      emit("installing");
+      if (total != null) downloaded = total;
+      speed = null;
+      emit("installing", true);
     }
   });
 
-  emit("done");
+  emit("done", true);
   await relaunch();
 }
 

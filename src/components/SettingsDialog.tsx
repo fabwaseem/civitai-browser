@@ -21,6 +21,7 @@ import {
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 import type { NsfwOption } from "@/api/types";
+import type { BlurNsfwFrom } from "@/lib/nsfw";
 import { checkForAppUpdate } from "@/lib/updater";
 import { clearImageCache, inspectComfyModelsDir } from "@/api/tauri";
 import { cn } from "@/lib/utils";
@@ -39,12 +40,16 @@ export function SettingsDialog() {
     maxConcurrentDownloads,
     confirmBeforeDelete,
     defaultNsfw,
+    blurNsfw,
+    blurNsfwFrom,
     setApiToken,
     setDownloadDir,
     setComfyModelsDir,
     setMaxConcurrentDownloads,
     setConfirmBeforeDelete,
     setDefaultNsfw,
+    setBlurNsfw,
+    setBlurNsfwFrom,
   } = useSettingsStore();
 
   const [tokenDraft, setTokenDraft] = useState(apiToken);
@@ -265,6 +270,36 @@ export function SettingsDialog() {
                         </SelectItem>
                       ),
                     )}
+                  </SelectContent>
+                </Select>
+              }
+            />
+            <Row
+              label="Blur NSFW"
+              control={
+                <Switch
+                  checked={blurNsfw}
+                  onCheckedChange={(v) => void setBlurNsfw(v)}
+                />
+              }
+            />
+            <Row
+              label="Blur from"
+              control={
+                <Select
+                  value={blurNsfwFrom}
+                  onValueChange={(v) => void setBlurNsfwFrom(v as BlurNsfwFrom)}
+                  disabled={!blurNsfw}
+                >
+                  <SelectTrigger className="w-[110px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(["Soft", "Mature", "X"] as BlurNsfwFrom[]).map((n) => (
+                      <SelectItem key={n} value={n}>
+                        {n}+
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               }

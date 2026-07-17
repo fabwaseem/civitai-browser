@@ -3,6 +3,8 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   Heart,
   MessageCircle,
   X,
@@ -21,8 +23,10 @@ import {
 import { comfyExportArgs } from "@/api/comfyExport";
 import { saveImage, writeTextFile } from "@/api/tauri";
 import type { CivitaiImage } from "@/api/types";
+import { shouldBlurNsfw } from "@/lib/nsfw";
 import { useSettingsStore } from "@/stores/settings";
 import { useDownloadStore } from "@/stores/downloads";
+import { useNsfwRevealStore } from "@/stores/nsfwReveal";
 import { formatCount, cn } from "@/lib/utils";
 import { notify } from "@/lib/toast";
 
@@ -37,7 +41,13 @@ export function DetailPanel({
   onClose,
   onDragStart,
 }: DetailPanelProps) {
-  const { apiToken, downloadDir, setDownloadDir } = useSettingsStore();
+  const { apiToken, downloadDir, setDownloadDir, blurNsfw, blurNsfwFrom } =
+    useSettingsStore();
+  const revealed = useNsfwRevealStore((s) =>
+    image ? !!s.revealed[image.id] : false,
+  );
+  const reveal = useNsfwRevealStore((s) => s.reveal);
+  const hide = useNsfwRevealStore((s) => s.hide);
   const [busy, setBusy] = useState(false);
   const [previewReady, setPreviewReady] = useState(false);
 
@@ -62,6 +72,8 @@ export function DetailPanel({
     current.stats?.heartCount ?? current.stats?.likeCount,
   );
   const comments = formatCount(current.stats?.commentCount);
+  const needsBlur = shouldBlurNsfw(current.nsfwLevel, blurNsfw, blurNsfwFrom);
+  const blurred = needsBlur && !revealed;
 
   async function copyText(text: string, label: string) {
     await navigator.clipboard.writeText(text);
@@ -141,10 +153,17 @@ export function DetailPanel({
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         <button
           type="button"
-          draggable
+          draggable={!blurred}
           onDragStart={(e) => {
+            if (blurred) {
+              e.preventDefault();
+              return;
+            }
             e.preventDefault();
             void onDragStart(current);
+          }}
+          onClick={() => {
+            if (blurred) reveal(current.id);
           }}
           className="relative mb-3 flex h-56 w-full items-center justify-center overflow-hidden rounded border border-white/10 bg-black/40"
         >
@@ -156,10 +175,42 @@ export function DetailPanel({
             onLoad={() => setPreviewReady(true)}
             onError={() => setPreviewReady(true)}
             className={cn(
-              "relative max-h-56 w-full object-contain transition-opacity duration-200",
+              "relative max-h-56 w-full object-contain transition-[opacity,filter] duration-200",
               previewReady ? "opacity-100" : "opacity-0",
+              blurred && "scale-110 blur-[28px] brightness-75 saturate-50",
             )}
           />
+          {blurred && (
+            <span className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/35 text-[13px] leading-normal text-white">
+              <Eye className="h-5 w-5 shrink-0 opacity-90" strokeWidth={2} />
+              <span className="block text-[11px] font-medium leading-none tracking-wide">
+                NSFW
+              </span>
+              <span className="block text-[10px] leading-none text-white/70">
+                Click to reveal
+              </span>
+            </span>
+          )}
+          {needsBlur && revealed && (
+            <span
+              role="button"
+              tabIndex={0}
+              title="Hide again"
+              className="absolute right-2 top-2 z-10 grid h-7 w-7 place-items-center rounded-sm bg-black/55 text-white/90 backdrop-blur-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                hide(current.id);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.stopPropagation();
+                  hide(current.id);
+                }
+              }}
+            >
+              <EyeOff className="h-3.5 w-3.5" />
+            </span>
+          )}
         </button>
 
         <div className="mb-3 grid grid-cols-2 gap-2">

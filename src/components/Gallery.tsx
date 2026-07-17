@@ -13,13 +13,20 @@ import {
   useResizeObserver,
 } from "masonic";
 import { ImageCard } from "@/components/ImageCard";
-import { GallerySkeleton } from "@/components/GallerySkeleton";
+import {
+  MASONRY_SKELETON_HEIGHTS,
+  SkeletonTile,
+} from "@/components/GallerySkeleton";
 import type { CivitaiImage } from "@/api/types";
 import type { ViewMode } from "@/stores/ui";
 
 const GAP = 2;
 const MIN_COLUMN_WIDTH = 300;
 const MAX_COLUMNS = 5;
+
+type MasonryEntry =
+  | { type: "image"; id: number; image: CivitaiImage }
+  | { type: "skeleton"; id: string; height: number };
 
 interface GalleryProps {
   images: CivitaiImage[];
@@ -48,6 +55,32 @@ export function Gallery({
   const [scrollTop, setScrollTop] = useState(0);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
 
+  const { cols } = useMemo(
+    () => layoutColumns(viewport.width || 1200),
+    [viewport.width],
+  );
+
+  const masonryItems = useMemo((): MasonryEntry[] => {
+    const items: MasonryEntry[] = images.map((image) => ({
+      type: "image",
+      id: image.id,
+      image,
+    }));
+    if (isFetchingNextPage) {
+      // ~2 rows of placeholders — masonic packs them under shortest columns
+      const n = Math.max(cols * 2, 6);
+      for (let i = 0; i < n; i++) {
+        items.push({
+          type: "skeleton",
+          id: `skeleton-${layoutKey}-${i}`,
+          height:
+            MASONRY_SKELETON_HEIGHTS[i % MASONRY_SKELETON_HEIGHTS.length],
+        });
+      }
+    }
+    return items;
+  }, [images, isFetchingNextPage, cols, layoutKey]);
+
   const maybeLoadMore = useInfiniteLoader(
     async () => {
       if (hasNextPage && !isFetchingNextPage) onLoadMore();
@@ -64,18 +97,28 @@ export function Gallery({
       width,
     }: {
       index: number;
-      data: CivitaiImage;
+      data: MasonryEntry;
       width: number;
-    }) => (
-      <ImageCard
-        data={data}
-        width={width}
-        variant="masonry"
-        onSelect={onSelect}
-        onDragStart={onDragStart}
-        onHover={onHover}
-      />
-    ),
+    }) => {
+      if (data.type === "skeleton") {
+        return (
+          <SkeletonTile
+            className="w-full"
+            style={{ height: data.height, width: "100%" }}
+          />
+        );
+      }
+      return (
+        <ImageCard
+          data={data.image}
+          width={width}
+          variant="masonry"
+          onSelect={onSelect}
+          onDragStart={onDragStart}
+          onHover={onHover}
+        />
+      );
+    },
     [onDragStart, onHover, onSelect],
   );
 
@@ -122,11 +165,12 @@ export function Gallery({
     <div
       ref={scrollRef}
       className="h-full overflow-x-hidden overflow-y-auto overscroll-contain"
+      aria-busy={isFetchingNextPage || undefined}
     >
       {viewMode === "masonry" && viewport.width > 0 && (
         <MasonryGallery
           key={layoutKey}
-          images={images}
+          items={masonryItems}
           width={viewport.width}
           height={viewport.height}
           scrollTop={scrollTop}
@@ -149,14 +193,11 @@ export function Gallery({
               onHover={onHover}
             />
           ))}
+          {isFetchingNextPage &&
+            Array.from({ length: cols }, (_, i) => (
+              <SkeletonTile key={`grid-sk-${i}`} className="aspect-square" />
+            ))}
         </div>
-      )}
-      {isFetchingNextPage && (
-        <GallerySkeleton
-          viewMode={viewMode}
-          count={viewMode === "grid" ? 5 : 6}
-          className="mt-[2px]"
-        />
       )}
     </div>
   );
@@ -168,32 +209,31 @@ function layoutColumns(containerWidth: number) {
     Math.max(1, Math.floor((containerWidth + GAP) / (MIN_COLUMN_WIDTH + GAP))),
   );
   const columnWidth = Math.floor((containerWidth - GAP * (cols - 1)) / cols);
-  // Exact width the positioner should use so no leftover pixels sit between columns
   const usedWidth = cols * columnWidth + GAP * (cols - 1);
   return { cols, columnWidth, usedWidth };
 }
 
 function MasonryGallery({
-  images,
+  items,
   width,
   height,
   scrollTop,
   renderItem,
   onRender,
 }: {
-  images: CivitaiImage[];
+  items: MasonryEntry[];
   width: number;
   height: number;
   scrollTop: number;
   renderItem: (props: {
     index: number;
-    data: CivitaiImage;
+    data: MasonryEntry;
     width: number;
   }) => ReactElement;
   onRender: (
     startIndex: number,
     stopIndex: number,
-    items: CivitaiImage[],
+    items: MasonryEntry[],
   ) => void;
 }) {
   const { cols, columnWidth, usedWidth } = useMemo(
@@ -216,13 +256,17 @@ function MasonryGallery({
   return useMasonry({
     positioner,
     resizeObserver,
-    items: images,
+    items,
     height: Math.max(height, 1),
     scrollTop,
     overscanBy: 2,
     itemHeightEstimate: Math.round(columnWidth * 1.35),
-    itemKey: (item, index) => item?.id ?? index,
-    // Kill inline baseline strut that adds phantom vertical space under cards
+    itemKey: (item, index) =>
+      item?.type === "image"
+        ? item.id
+        : item?.type === "skeleton"
+          ? item.id
+          : index,
     itemStyle: {
       margin: 0,
       padding: 0,
