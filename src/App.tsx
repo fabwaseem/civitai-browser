@@ -4,6 +4,7 @@ import { FilterBar } from "@/components/FilterBar";
 import { Gallery } from "@/components/Gallery";
 import { DetailPanel } from "@/components/DetailPanel";
 import { SettingsDialog } from "@/components/SettingsDialog";
+import { TitleBar } from "@/components/TitleBar";
 import { UpdateChecker } from "@/components/UpdateChecker";
 import { flattenImages, useImagesQuery } from "@/api/queries";
 import { useImageDrag } from "@/hooks/useImageDrag";
@@ -92,59 +93,65 @@ function BrowserShell() {
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden">
       <UpdateChecker />
-
-      <section className="flex min-w-0 flex-1 flex-col">
-        <FilterBar
-          onRefresh={() => void query.refetch()}
-          onOpenSettings={() => setSettingsOpen(true)}
-          isFetching={query.isFetching}
-          resultCount={images.length}
-        />
-
-        <main className="min-h-0 flex-1">
-          {query.isLoading ? (
-            <div className="grid h-full place-items-center text-sm text-[var(--color-muted)]">
-              Fetching images from Civitai…
-            </div>
-          ) : query.isError ? (
-            <div className="grid h-full place-items-center gap-2 px-6 text-center text-sm">
-              <p className="text-[var(--color-danger)]">
-                {(query.error as Error).message}
-              </p>
-              <button
-                type="button"
-                className="text-[var(--color-accent)] underline"
-                onClick={() => void query.refetch()}
-              >
-                Retry
-              </button>
-            </div>
-          ) : (
-            <Gallery
-              images={images}
-              viewMode={viewMode}
-              layoutKey={layoutKey}
-              hasNextPage={!!query.hasNextPage}
-              isFetchingNextPage={query.isFetchingNextPage}
-              onLoadMore={() => void query.fetchNextPage()}
-              onSelect={handleSelect}
-              onDragStart={beginDrag}
-              onHover={prefetchImage}
-            />
-          )}
-        </main>
-      </section>
-
-      <DetailPanel
-        image={selected}
-        onClose={() => {
-          setSelected(null);
-          setSelectedId(null);
-        }}
-        onDragStart={beginDrag}
+      <TitleBar
+        sidebarOpen={!!selected}
+        resultCount={images.length}
+        isFetching={query.isFetching}
       />
+
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <section className="flex min-w-0 flex-1 flex-col">
+          <FilterBar
+            onRefresh={() => void query.refetch()}
+            onOpenSettings={() => setSettingsOpen(true)}
+            isFetching={query.isFetching}
+          />
+
+          <main className="min-h-0 flex-1">
+            {query.isLoading ? (
+              <div className="grid h-full place-items-center text-sm text-[var(--color-muted)]">
+                Fetching images from Civitai…
+              </div>
+            ) : query.isError ? (
+              <div className="grid h-full place-items-center gap-2 px-6 text-center text-sm">
+                <p className="text-[var(--color-danger)]">
+                  {(query.error as Error).message}
+                </p>
+                <button
+                  type="button"
+                  className="text-[var(--color-accent)] underline"
+                  onClick={() => void query.refetch()}
+                >
+                  Retry
+                </button>
+              </div>
+            ) : (
+              <Gallery
+                images={images}
+                viewMode={viewMode}
+                layoutKey={layoutKey}
+                hasNextPage={!!query.hasNextPage}
+                isFetchingNextPage={query.isFetchingNextPage}
+                onLoadMore={() => void query.fetchNextPage()}
+                onSelect={handleSelect}
+                onDragStart={beginDrag}
+                onHover={prefetchImage}
+              />
+            )}
+          </main>
+        </section>
+
+        <DetailPanel
+          image={selected}
+          onClose={() => {
+            setSelected(null);
+            setSelectedId(null);
+          }}
+          onDragStart={beginDrag}
+        />
+      </div>
 
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>

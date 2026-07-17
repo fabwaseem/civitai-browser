@@ -22,6 +22,7 @@ import { useSettingsStore } from "@/stores/settings";
 import type { NsfwOption } from "@/api/types";
 import { checkForAppUpdate } from "@/lib/updater";
 import { clearImageCache } from "@/api/tauri";
+import logo from "@/assets/logo.svg";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -82,7 +83,16 @@ export function SettingsDialog({
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Settings</DialogTitle>
+          <DialogTitle className="flex items-center gap-2.5">
+            <img
+              src={logo}
+              alt=""
+              width={28}
+              height={28}
+              className="h-7 w-7 rounded-md ring-1 ring-white/15"
+            />
+            Settings
+          </DialogTitle>
           <DialogDescription>
             Persist API token, downloads folder, and defaults. App v{version}
           </DialogDescription>

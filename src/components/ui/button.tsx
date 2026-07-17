@@ -9,7 +9,7 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-[var(--color-accent)] text-[#041018] hover:brightness-110 shadow-[0_0_20px_rgba(90,200,255,0.25)]",
+          "bg-[var(--color-accent)] text-[var(--color-accent-ink)] hover:brightness-110 shadow-[0_0_22px_rgba(94,240,176,0.28)]",
         secondary:
           "glass-chip text-[var(--color-fg)] hover:bg-white/10",
         ghost: "hover:bg-white/8 text-[var(--color-fg)]",

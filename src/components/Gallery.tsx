@@ -112,7 +112,7 @@ export function Gallery({
   if (images.length === 0) {
     return (
       <div className="grid h-full place-items-center px-6 text-sm text-[var(--color-muted)]">
-        No images match these filters. Try “Has meta” or widen the period.
+        No images match these filters. Try “All” or widen the period.
       </div>
     );
   }

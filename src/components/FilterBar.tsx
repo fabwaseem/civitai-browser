@@ -35,8 +35,7 @@ const SORTS: SortOption[] = [
 const PERIODS: PeriodOption[] = ["Day", "Week", "Month", "Year", "AllTime"];
 const NSFW: NsfwOption[] = ["None", "Soft", "Mature", "X"];
 const MODES: { value: WorkflowMode; label: string }[] = [
-  { value: "workflow", label: "Comfy graph" },
-  { value: "meta", label: "Has meta" },
+  { value: "workflow", label: "Has workflow" },
   { value: "all", label: "All" },
 ];
 
@@ -49,14 +48,12 @@ interface FilterBarProps {
   onRefresh: () => void;
   onOpenSettings: () => void;
   isFetching: boolean;
-  resultCount: number;
 }
 
 export function FilterBar({
   onRefresh,
   onOpenSettings,
   isFetching,
-  resultCount,
 }: FilterBarProps) {
   const filters = useFilterStore();
   const { viewMode, setViewMode, filtersOpen, toggleFiltersOpen } = useUiStore();
@@ -64,20 +61,6 @@ export function FilterBar({
   return (
     <header className="glass sticky top-0 z-20 rounded-none border-x-0 border-t-0 px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="mr-1 flex min-w-0 items-center gap-2">
-          <div className="grid h-8 w-8 place-items-center rounded-md bg-[var(--color-accent-soft)] text-[var(--color-accent)] shadow-[inset_0_1px_0_rgba(255,255,255,0.25)]">
-            <span className="text-sm font-bold">C</span>
-          </div>
-          <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold tracking-tight">
-              Civitai Browser
-            </h1>
-            <p className="truncate text-[10px] text-[var(--color-muted)]">
-              {resultCount} shown{isFetching ? " · loading" : ""}
-            </p>
-          </div>
-        </div>
-
         <CompactSelect
           value={filters.workflowMode}
           onChange={(v) => filters.setWorkflowMode(v as WorkflowMode)}
@@ -136,7 +119,7 @@ export function FilterBar({
               className={cn(
                 "grid h-8 w-8 place-items-center rounded transition",
                 viewMode === id
-                  ? "bg-[var(--color-accent)] text-[#041018]"
+                  ? "bg-[var(--color-accent)] text-[var(--color-accent-ink)]"
                   : "text-[var(--color-muted)] hover:text-[var(--color-fg)]",
               )}
             >

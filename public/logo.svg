@@ -1,0 +1,29 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="80" y1="40" x2="940" y2="980" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F1614"/>
+      <stop offset="1" stop-color="#070B0A"/>
+    </linearGradient>
+    <linearGradient id="mint" x1="200" y1="160" x2="820" y2="860" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B8FFE0"/>
+      <stop offset="0.5" stop-color="#5EF0B0"/>
+      <stop offset="1" stop-color="#1FCB87"/>
+    </linearGradient>
+    <linearGradient id="mintSoft" x1="420" y1="180" x2="780" y2="700" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8AFFC8"/>
+      <stop offset="1" stop-color="#36D99A"/>
+    </linearGradient>
+    <linearGradient id="mintDeep" x1="180" y1="520" x2="520" y2="880" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2AAF7A"/>
+      <stop offset="1" stop-color="#17805A"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="220" fill="url(#bg)"/>
+
+  <!-- Masonry only (2 columns) -->
+  <rect x="196" y="196" width="288" height="360" rx="56" fill="url(#mint)"/>
+  <rect x="196" y="588" width="288" height="240" rx="56" fill="url(#mintDeep)"/>
+  <rect x="540" y="196" width="288" height="240" rx="56" fill="url(#mintSoft)"/>
+  <rect x="540" y="468" width="288" height="360" rx="56" fill="url(#mint)" fill-opacity="0.92"/>
+</svg>
