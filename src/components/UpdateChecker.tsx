@@ -67,14 +67,13 @@ export function UpdateChecker() {
             : "Update now";
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 top-10 z-80 flex justify-center px-3">
+    <div className="pointer-events-none fixed inset-x-0 top-10 z-[200] flex justify-center px-3">
       <div
-        className="pointer-events-auto mt-2 w-full max-w-xl rounded-lg px-3.5 py-3 shadow-2xl"
+        className="pointer-events-auto mt-2 w-full max-w-xl rounded-lg px-3.5 py-3"
         style={{
-          background: "rgba(15, 22, 20, 0.96)",
-          border: "1px solid rgba(184, 255, 224, 0.2)",
-          backdropFilter: "blur(18px)",
-          boxShadow: "0 14px 44px rgba(0, 0, 0, 0.55)",
+          background: "rgba(15, 22, 20, 0.97)",
+          border: "1px solid rgba(184, 255, 224, 0.22)",
+          boxShadow: "0 14px 44px rgba(0, 0, 0, 0.65)",
         }}
       >
         <div className="flex items-start gap-3">

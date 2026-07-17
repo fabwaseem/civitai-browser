@@ -207,39 +207,38 @@ function ensureSigningEnv() {
 }
 
 /**
- * Stable updater asset name — no spaces (GitHub turns them into dots and
- * breaks URLs that still contain spaces).
+ * GitHub Release download URLs replace spaces with dots.
+ * Keep the Tauri-produced filename; only rewrite the URL/name mapping.
  */
-function updaterAssetBase(version) {
-  return `civitai-browser-${version}-x64-setup`;
+function githubDownloadName(localName) {
+  return localName.replace(/ /g, ".");
 }
 
 /**
  * Only artifacts for this release version (avoids uploading leftover
- * Civitai Browser_0.1.0_… next to 2.0.0 after a bump).
+ * Civitai Browser_0.1.0_… next to newer builds).
  */
 function findNsisArtifacts(version) {
   const nsisDir = path.join(root, "src-tauri", "target", "release", "bundle", "nsis");
   if (!fs.existsSync(nsisDir)) return { nsisDir, files: [] };
   const token = `_${version}_`;
-  const names = fs.readdirSync(nsisDir).filter((f) => f.includes(token));
-  const zips = names.filter((f) => f.endsWith(".nsis.zip"));
-  const exes = names.filter(
-    (f) =>
-      (f.endsWith("-setup.exe") || (f.endsWith(".exe") && !f.endsWith(".sig"))) &&
-      !f.startsWith("civitai-browser-"), // ignore our renamed copies
+  // Prefer real build outputs in nsis root only (ignore staged copies)
+  const rootNames = fs
+    .readdirSync(nsisDir)
+    .filter((f) => f.includes(token) && !f.startsWith("civitai-browser-"));
+  const zips = rootNames.filter((f) => f.endsWith(".nsis.zip"));
+  const exes = rootNames.filter(
+    (f) => f.endsWith("-setup.exe") || (f.endsWith(".exe") && !f.endsWith(".sig")),
   );
   const picked = [...zips, ...exes];
   const files = [];
-  const base = updaterAssetBase(version);
   for (const name of picked) {
     const full = path.join(nsisDir, name);
+    if (!fs.statSync(full).isFile()) continue;
     const sig = `${full}.sig`;
-    const ext = name.endsWith(".nsis.zip") ? ".nsis.zip" : path.extname(name);
-    const githubName = `${base}${ext === ".exe" ? ".exe" : ext}`;
     files.push({
       name,
-      githubName,
+      githubName: githubDownloadName(name),
       full,
       sig: fs.existsSync(sig) ? sig : null,
     });
@@ -253,6 +252,7 @@ function writeLatestJson(version, notes, artifact) {
     fail(`Missing signature for ${artifact.name}. Build with signing key enabled.`);
   }
   const signature = fs.readFileSync(sigPath, "utf8").trim();
+  // GitHub serves spaces as dots — URL must use the dotted name
   const asset = artifact.githubName;
   const url = `https://github.com/${REPO}/releases/download/v${version}/${asset}`;
   const manifest = {
@@ -416,15 +416,31 @@ function main() {
       run("gh", ["release", "delete", tag, "--repo", REPO, "--yes"]);
     }
 
-    // path#name → GitHub asset name (spaces become dots; keep URL stable)
+    // Upload already-renamed staged files (no path#name — broken on Windows)
     const assetArgs = [];
     for (const f of files) {
-      assetArgs.push(`${f.full}#${f.githubName}`);
-      if (f.sig) assetArgs.push(`${f.sig}#${f.githubName}.sig`);
+      assetArgs.push(f.full);
+      if (f.sig) assetArgs.push(f.sig);
     }
     assetArgs.push(latestPath);
 
     run("gh", [...uploadArgs, ...assetArgs]);
+
+    // Sanity: installer URL in latest.json must exist
+    const checkUrl = `https://github.com/${REPO}/releases/download/${tag}/${updaterArtifact.githubName}`;
+    console.log(`Verifying ${checkUrl}`);
+    const verify = spawnOk(
+      "curl.exe",
+      ["-s", "-o", "NUL", "-w", "%{http_code}", "-L", checkUrl],
+      { stdio: "pipe", encoding: "utf8" },
+    );
+    const code = (verify.stdout || "").trim();
+    if (code !== "200") {
+      fail(
+        `Uploader mismatch: ${checkUrl} returned HTTP ${code}. latest.json URL does not match uploaded assets.`,
+      );
+    }
+    console.log(`✓ Installer URL OK (HTTP ${code})`);
   }
 
   console.log(`
@@ -434,7 +450,7 @@ Updater endpoint:
   https://github.com/${REPO}/releases/latest/download/latest.json
 
 Installer:
-  https://github.com/${REPO}/releases/download/${tag}/${updaterArtifact.name}
+  https://github.com/${REPO}/releases/download/${tag}/${updaterArtifact.githubName}
 
 Next:
   1. Install an older build (or keep current if you just bumped)
