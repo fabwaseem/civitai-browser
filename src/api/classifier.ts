@@ -151,6 +151,68 @@ export interface UsedResource {
   modelVersionId?: number;
 }
 
+/**
+ * Well-known VAE filenames / stems (matched case-insensitively, with or without extension).
+ * Used when Comfy/Civitai type metadata is missing or wrong.
+ */
+export const KNOWN_VAES = [
+  "ae",
+  "ae.safetensors",
+  "flux-vae",
+  "flux_vae",
+  "sdxl_vae",
+  "sdxl_vae.safetensors",
+  "sdxl-vae",
+  "vae-ft-mse-840000-ema-pruned",
+  "vae-ft-mse-840000",
+  "sd-vae-ft-mse",
+  "sd-vae-ft-ema",
+  "kl-f8-anime2",
+  "orangemix",
+  "orangemix.vae",
+  "animevae",
+  "clearvae",
+  "blessed2",
+  "blessed2_fp16",
+  "color101vae",
+  "qwen_image_vae",
+  "qwenimagevae",
+  "qwen_image_vae.safetensors",
+  "qwenimagevae_qwenimagevae",
+  "wan_2.1_vae",
+  "wan21_vae",
+  "hunyuan_vae",
+  "hunyuanvideo_vae",
+] as const;
+
+function normalizeResourceKey(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\.(safetensors|ckpt|pt|bin|pth)$/i, "")
+    .replace(/[\s\-_.]+/g, "")
+    .trim();
+}
+
+const KNOWN_VAE_KEYS = new Set(
+  KNOWN_VAES.map((n) => normalizeResourceKey(n)).filter(Boolean),
+);
+
+/** True if filename looks like / is a known VAE. */
+export function isVaeName(name: string): boolean {
+  const lower = name.toLowerCase();
+  const key = normalizeResourceKey(name);
+  if (KNOWN_VAE_KEYS.has(key)) return true;
+  // path segments: models/vae/foo.safetensors
+  if (/[/\\]vae[/\\]/i.test(lower)) return true;
+  // common naming: *_vae*, *vae_*, *-vae*, qwen_image_vae, …
+  if (/(^|[_\-.\s])vae([_\-.\s]|$)/i.test(lower)) return true;
+  if (/vae[_-]?(ft|mse|ema|sdxl|sd|flux|anime|qwen|wan)/i.test(lower)) {
+    return true;
+  }
+  if (/(sdxl|flux|qwen|wan|hunyuan).{0,24}vae/i.test(lower)) return true;
+  return false;
+}
+
 function classifyResourceType(raw?: string | null): UsedResourceKind {
   const t = (raw ?? "").toLowerCase();
   if (!t) return "other";
@@ -165,12 +227,83 @@ function classifyResourceType(raw?: string | null): UsedResourceKind {
   return "other";
 }
 
+/** Prefer explicit type, then filename heuristics (especially VAE). */
+function resolveResourceKind(
+  typeHint: string | null | undefined,
+  name: string,
+): UsedResourceKind {
+  const fromType = classifyResourceType(typeHint);
+  if (fromType === "vae" || isVaeName(name)) return "vae";
+  if (fromType !== "other") return fromType;
+  const lower = name.toLowerCase();
+  if (/\.(pt|bin)$/i.test(lower) && /embed|textual|ti[_-]/i.test(lower)) {
+    return "embedding";
+  }
+  if (/lora|lycoris|locon/i.test(lower)) return "lora";
+  return "other";
+}
+
 function pushUnique(list: UsedResource[], item: UsedResource) {
   const key = `${item.kind}|${item.name}|${item.version ?? ""}|${item.modelVersionId ?? ""}`;
   if (list.some((x) => `${x.kind}|${x.name}|${x.version ?? ""}|${x.modelVersionId ?? ""}` === key)) {
     return;
   }
   list.push(item);
+}
+
+/** Some Comfy custom nodes store LoRAs as a JSON array/object string. */
+function expandNamedResources(
+  raw: string,
+  kind: UsedResourceKind,
+): UsedResource[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+
+  if (
+    (trimmed.startsWith("[") || trimmed.startsWith("{")) &&
+    (trimmed.includes('"name"') ||
+      trimmed.includes('"lora"') ||
+      trimmed.includes('"display_name"'))
+  ) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      const out: UsedResource[] = [];
+      for (const entry of items) {
+        if (typeof entry === "string" && entry.trim()) {
+          out.push({ kind, name: entry.trim() });
+          continue;
+        }
+        if (!isPlainObject(entry)) continue;
+        const name =
+          (typeof entry.display_name === "string" && entry.display_name) ||
+          (typeof entry.lora === "string" && entry.lora) ||
+          (typeof entry.name === "string" && entry.name) ||
+          (typeof entry.modelName === "string" && entry.modelName) ||
+          "";
+        if (!name) continue;
+        const weight =
+          typeof entry.weight === "number"
+            ? entry.weight
+            : typeof entry.strength === "number"
+              ? entry.strength
+              : typeof entry.text_encoder_weight === "number"
+                ? entry.text_encoder_weight
+                : undefined;
+        out.push({ kind, name, weight });
+      }
+      if (out.length) {
+        return out.map((item) => ({
+          ...item,
+          kind: resolveResourceKind(kind, item.name),
+        }));
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  return [{ kind: resolveResourceKind(kind, trimmed), name: trimmed }];
 }
 
 function resourcesFromCivitaiMeta(meta: Record<string, unknown>): UsedResource[] {
@@ -204,8 +337,9 @@ function resourcesFromCivitaiMeta(meta: Record<string, unknown>): UsedResource[]
           ? entry.modelVersionId
           : undefined;
       pushUnique(out, {
-        kind: classifyResourceType(
+        kind: resolveResourceKind(
           typeof entry.type === "string" ? entry.type : null,
+          name,
         ),
         name,
         version,
@@ -241,26 +375,39 @@ function resourcesFromComfyPrompt(prompt: Record<string, unknown>): UsedResource
         (typeof inputs.unet_name === "string" && inputs.unet_name) ||
         (typeof inputs.model_name === "string" && inputs.model_name) ||
         "";
-      if (name) pushUnique(out, { kind: "checkpoint", name });
+      if (name) {
+        pushUnique(out, {
+          kind: resolveResourceKind("checkpoint", name),
+          name,
+        });
+      }
     }
 
     if (/lora/i.test(classType)) {
-      const name =
+      const rawName =
         (typeof inputs.lora_name === "string" && inputs.lora_name) ||
         (typeof inputs.lora === "string" && inputs.lora) ||
         "";
-      if (!name) continue;
+      if (!rawName) continue;
       const weight =
         typeof inputs.strength_model === "number"
           ? inputs.strength_model
           : typeof inputs.strength === "number"
             ? inputs.strength
             : undefined;
-      pushUnique(out, { kind: "lora", name, weight });
+      for (const item of expandNamedResources(rawName, "lora")) {
+        pushUnique(out, {
+          ...item,
+          weight: item.weight ?? weight,
+        });
+      }
     }
 
     if (/vae/i.test(classType) && typeof inputs.vae_name === "string") {
-      pushUnique(out, { kind: "vae", name: inputs.vae_name });
+      pushUnique(out, {
+        kind: resolveResourceKind("vae", inputs.vae_name),
+        name: inputs.vae_name,
+      });
     }
 
     if (/embedding|textual/i.test(classType)) {
@@ -291,14 +438,20 @@ function resourcesFromComfyWorkflow(workflow: Record<string, unknown>): UsedReso
       | undefined;
 
     if (/checkpoint|unetloader/i.test(type) && firstStr) {
-      pushUnique(out, { kind: "checkpoint", name: firstStr });
+      for (const item of expandNamedResources(firstStr, "checkpoint")) {
+        pushUnique(out, item);
+      }
     } else if (/lora/i.test(type) && firstStr) {
       const strength = widgets.find((w) => typeof w === "number") as
         | number
         | undefined;
-      pushUnique(out, { kind: "lora", name: firstStr, weight: strength });
+      for (const item of expandNamedResources(firstStr, "lora")) {
+        pushUnique(out, { ...item, weight: item.weight ?? strength });
+      }
     } else if (/vae/i.test(type) && firstStr) {
-      pushUnique(out, { kind: "vae", name: firstStr });
+      for (const item of expandNamedResources(firstStr, "vae")) {
+        pushUnique(out, item);
+      }
     }
   }
   return out;
@@ -312,6 +465,16 @@ export function extractUsedResources(
 
   const out: UsedResource[] = [];
   for (const item of resourcesFromCivitaiMeta(meta)) pushUnique(out, item);
+
+  // Some UIs dump LoRA stacks as a top-level JSON string
+  for (const key of ["Loras", "loras", "lora", "LoRA"]) {
+    const val = meta[key];
+    if (typeof val === "string" && val.trim().startsWith("[")) {
+      for (const item of expandNamedResources(val, "lora")) {
+        pushUnique(out, item);
+      }
+    }
+  }
 
   const bundle = extractComfyBundle(meta);
   if (bundle?.prompt) {
@@ -329,13 +492,20 @@ export function extractUsedResources(
   const order: UsedResourceKind[] = [
     "checkpoint",
     "lora",
-    "embedding",
     "vae",
+    "embedding",
     "other",
   ];
-  return out.sort(
-    (a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.name.localeCompare(b.name),
-  );
+  return out
+    .map((r) => ({
+      ...r,
+      kind: resolveResourceKind(r.kind, r.name),
+    }))
+    .sort(
+      (a, b) =>
+        order.indexOf(a.kind) - order.indexOf(b.kind) ||
+        a.name.localeCompare(b.name),
+    );
 }
 
 /** Pretty UI workflow JSON for copy/save (falls back to API prompt graph). */

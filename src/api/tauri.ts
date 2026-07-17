@@ -40,6 +40,10 @@ export function openPath(path: string) {
   return invoke<void>("open_path_cmd", { path });
 }
 
+export function writeTextFile(path: string, contents: string) {
+  return invoke<void>("write_text_file_cmd", { path, contents });
+}
+
 export function clearImageCache() {
   return invoke<number>("clear_image_cache_cmd");
 }
@@ -59,3 +63,71 @@ export function lookupDragReady(imageIds: number[]) {
 export function ensureDragReady(params: CacheImageArgs) {
   return invoke<DragReadyPaths>("ensure_drag_ready_cmd", { params });
 }
+
+export interface ResolveModelArgs {
+  modelVersionId?: number;
+  modelId?: number;
+  name?: string;
+  kind?: string;
+  apiToken?: string;
+}
+
+export interface ResolvedModelFile {
+  modelId: number | null;
+  modelVersionId: number;
+  modelName: string;
+  versionName: string;
+  fileName: string;
+  sizeKb: number | null;
+  downloadUrl: string;
+  air: string | null;
+}
+
+export function resolveModelFile(params: ResolveModelArgs) {
+  return invoke<ResolvedModelFile>("resolve_model_file_cmd", { params });
+}
+
+export interface StartFileDownloadArgs {
+  jobId: string;
+  url: string;
+  destPath: string;
+  apiToken?: string;
+}
+
+export function startFileDownload(params: StartFileDownloadArgs) {
+  return invoke<string>("start_file_download_cmd", { params });
+}
+
+export function cancelFileDownload(jobId: string, discardPartial = true) {
+  return invoke<boolean>("cancel_file_download_cmd", {
+    jobId,
+    discardPartial,
+  });
+}
+
+export function clearDownloadPartial(destPath: string) {
+  return invoke<boolean>("clear_download_partial_cmd", { destPath });
+}
+
+export interface ComfyModelsDirInfo {
+  path: string;
+  valid: boolean;
+  reason: string;
+  found: string[];
+  missingCommon: string[];
+}
+
+export function inspectComfyModelsDir(path: string) {
+  return invoke<ComfyModelsDirInfo>("inspect_comfy_models_dir_cmd", { path });
+}
+
+export interface DownloadProgressEvent {
+  jobId: string;
+  downloaded: number;
+  total: number | null;
+  speed: number;
+  status: string;
+  message: string | null;
+  destPath: string | null;
+}
+

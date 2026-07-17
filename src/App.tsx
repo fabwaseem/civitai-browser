@@ -2,15 +2,20 @@ import { useEffect, useMemo, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { FilterBar } from "@/components/FilterBar";
 import { Gallery } from "@/components/Gallery";
+import { GallerySkeleton } from "@/components/GallerySkeleton";
 import { DetailPanel } from "@/components/DetailPanel";
 import { SettingsDialog } from "@/components/SettingsDialog";
+import { DownloadsPanel } from "@/components/DownloadsPanel";
+import { DownloadFlyLayer } from "@/components/DownloadFlyLayer";
 import { TitleBar } from "@/components/TitleBar";
 import { UpdateChecker } from "@/components/UpdateChecker";
+import { AppToaster, notify } from "@/lib/toast";
 import { flattenImages, useImagesQuery } from "@/api/queries";
 import { useImageDrag } from "@/hooks/useImageDrag";
 import { useSettingsStore } from "@/stores/settings";
 import { useFilterStore } from "@/stores/filters";
 import { useUiStore } from "@/stores/ui";
+import { useDownloadStore } from "@/stores/downloads";
 import type { CivitaiImage } from "@/api/types";
 
 const queryClient = new QueryClient({
@@ -26,27 +31,44 @@ const queryClient = new QueryClient({
 function BrowserShell() {
   const hydrated = useSettingsStore((s) => s.hydrated);
   const hydrate = useSettingsStore((s) => s.hydrate);
-  const defaultNsfw = useSettingsStore((s) => s.defaultNsfw);
-  const setNsfw = useFilterStore((s) => s.setNsfw);
+  const filtersHydrated = useFilterStore((s) => s.hydrated);
+  const hydrateFilters = useFilterStore((s) => s.hydrate);
+  const hydrateUi = useUiStore((s) => s.hydrate);
   const filters = useFilterStore();
   const viewMode = useUiStore((s) => s.viewMode);
   const selectedId = useUiStore((s) => s.selectedId);
   const setSelectedId = useUiStore((s) => s.setSelectedId);
 
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [selected, setSelected] = useState<CivitaiImage | null>(null);
+  const downloadsOpen = useDownloadStore((s) => s.panelOpen);
+  const setDownloadsOpen = useDownloadStore((s) => s.setPanelOpen);
+  const ensureDownloadListener = useDownloadStore((s) => s.ensureListener);
+  const openSettings = useUiStore((s) => s.openSettings);
 
   useEffect(() => {
-    void hydrate();
-  }, [hydrate]);
+    void (async () => {
+      await hydrate();
+      await hydrateFilters();
+      await hydrateUi();
+    })();
+  }, [hydrate, hydrateFilters, hydrateUi]);
 
   useEffect(() => {
-    if (hydrated) setNsfw(defaultNsfw);
-  }, [defaultNsfw, hydrated, setNsfw]);
+    void ensureDownloadListener();
+  }, [ensureDownloadListener]);
 
+  const ready = hydrated && filtersHydrated;
   const query = useImagesQuery();
   const images = useMemo(() => flattenImages(query.data), [query.data]);
   const { beginDrag, prefetchImage, prepareSelected } = useImageDrag(images);
+
+  useEffect(() => {
+    if (!query.isError) return;
+    notify.error(
+      (query.error as Error)?.message || "Failed to load images",
+      { id: "gallery-load-error" },
+    );
+  }, [query.isError, query.error]);
 
   const layoutKey = useMemo(
     () =>
@@ -84,7 +106,7 @@ function BrowserShell() {
     prepareSelected(image);
   }
 
-  if (!hydrated) {
+  if (!ready) {
     return (
       <div className="grid h-full place-items-center text-sm text-[var(--color-muted)]">
         Loading settings…
@@ -94,7 +116,9 @@ function BrowserShell() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
+      <AppToaster />
       <UpdateChecker />
+      <DownloadFlyLayer />
       <TitleBar
         sidebarOpen={!!selected}
         resultCount={images.length}
@@ -105,14 +129,15 @@ function BrowserShell() {
         <section className="flex min-w-0 flex-1 flex-col">
           <FilterBar
             onRefresh={() => void query.refetch()}
-            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenSettings={() => openSettings()}
+            onOpenDownloads={() => setDownloadsOpen(true)}
             isFetching={query.isFetching}
           />
 
           <main className="min-h-0 flex-1">
             {query.isLoading ? (
-              <div className="grid h-full place-items-center text-sm text-[var(--color-muted)]">
-                Fetching images from Civitai…
+              <div className="h-full overflow-hidden">
+                <GallerySkeleton viewMode={viewMode} />
               </div>
             ) : query.isError ? (
               <div className="grid h-full place-items-center gap-2 px-6 text-center text-sm">
@@ -153,7 +178,8 @@ function BrowserShell() {
         />
       </div>
 
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <SettingsDialog />
+      <DownloadsPanel open={downloadsOpen} onOpenChange={setDownloadsOpen} />
     </div>
   );
 }

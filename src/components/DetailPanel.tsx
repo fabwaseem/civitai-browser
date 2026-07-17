@@ -1,8 +1,14 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Copy, Download, ExternalLink, Workflow, X } from "lucide-react";
+import {
+  Copy,
+  Download,
+  ExternalLink,
+  Heart,
+  MessageCircle,
+  Workflow,
+  X,
+} from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { save } from "@tauri-apps/plugin-dialog";
-import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { Button } from "@/components/ui/button";
 import { BlurPlaceholder } from "@/components/BlurPlaceholder";
 import {
@@ -16,10 +22,12 @@ import {
   type UsedResource,
 } from "@/api/classifier";
 import { comfyExportArgs } from "@/api/comfyExport";
-import { saveImage } from "@/api/tauri";
+import { saveImage, writeTextFile } from "@/api/tauri";
 import type { CivitaiImage } from "@/api/types";
 import { useSettingsStore } from "@/stores/settings";
+import { useDownloadStore } from "@/stores/downloads";
 import { formatCount, cn } from "@/lib/utils";
+import { notify } from "@/lib/toast";
 
 interface DetailPanelProps {
   image: CivitaiImage | null;
@@ -33,12 +41,10 @@ export function DetailPanel({
   onDragStart,
 }: DetailPanelProps) {
   const { apiToken, downloadDir, setDownloadDir } = useSettingsStore();
-  const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [previewReady, setPreviewReady] = useState(false);
 
   useEffect(() => {
-    setStatus(null);
     setPreviewReady(false);
   }, [image?.id]);
 
@@ -53,42 +59,50 @@ export function DetailPanel({
   const resources = extractUsedResources(current.meta);
   const checkpoints = resources.filter((r) => r.kind === "checkpoint");
   const loras = resources.filter((r) => r.kind === "lora");
-  const otherResources = resources.filter(
-    (r) => r.kind !== "checkpoint" && r.kind !== "lora",
-  );
+  const vaes = resources.filter((r) => r.kind === "vae");
+  const embeddings = resources.filter((r) => r.kind === "embedding");
+  const otherResources = resources.filter((r) => r.kind === "other");
   const previewSrc = galleryImageUrl(current, 640);
+  const nodeCount = Array.isArray(comfy?.workflow?.nodes)
+    ? comfy.workflow.nodes.length
+    : null;
+  const hearts = formatCount(
+    current.stats?.heartCount ?? current.stats?.likeCount,
+  );
+  const comments = formatCount(current.stats?.commentCount);
 
   async function copyText(text: string, label: string) {
     await navigator.clipboard.writeText(text);
-    setStatus(`${label} copied`);
+    notify.success(`${label} copied`);
+  }
+
+  async function ensureDownloadDir(): Promise<string | null> {
+    let dir = downloadDir;
+    if (!dir) {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({ directory: true, multiple: false });
+      if (!picked || Array.isArray(picked)) return null;
+      dir = picked;
+      await setDownloadDir(dir);
+    }
+    return dir;
   }
 
   async function handleDownload() {
     setBusy(true);
-    setStatus(null);
     try {
-      let dir = downloadDir;
+      const dir = await ensureDownloadDir();
       if (!dir) {
-        const { open } = await import("@tauri-apps/plugin-dialog");
-        const picked = await open({ directory: true, multiple: false });
-        if (!picked || Array.isArray(picked)) {
-          setBusy(false);
-          return;
-        }
-        dir = picked;
-        await setDownloadDir(dir);
+        setBusy(false);
+        return;
       }
       const path = await saveImage({
         ...comfyExportArgs(current, apiToken || undefined),
         destinationDir: dir,
       });
-      setStatus(
-        path.toLowerCase().endsWith(".png")
-          ? `Saved PNG (ComfyUI-ready): ${path}`
-          : `Saved to ${path}`,
-      );
+      notify.saved("Image saved", path);
     } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      notify.error(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
@@ -96,48 +110,52 @@ export function DetailPanel({
 
   async function handleSaveWorkflow() {
     if (!workflow) return;
-    const path = await save({
-      defaultPath: `civitai-${current.id}-workflow.json`,
-      filters: [{ name: "JSON", extensions: ["json"] }],
-    });
-    if (!path) return;
-    await writeTextFile(path, workflow);
-    setStatus(`Workflow saved to ${path}`);
+    try {
+      const dir = await ensureDownloadDir();
+      if (!dir) return;
+      const sep = dir.includes("\\") ? "\\" : "/";
+      const path = `${dir.replace(/[/\\]$/, "")}${sep}civitai-${current.id}-workflow.json`;
+      await writeTextFile(path, workflow);
+      notify.saved("Workflow saved", path);
+    } catch (e) {
+      notify.error(e instanceof Error ? e.message : String(e));
+    }
   }
 
   return (
     <aside className="glass-strong flex h-full w-[340px] shrink-0 flex-col border-y-0 border-r-0">
-      <div className="flex items-start justify-between gap-2 border-b border-white/10 p-3">
-        <div>
-          <div className="mb-1 flex items-center gap-2">
+      <div className="flex items-start justify-between gap-2 border-b border-white/10 px-3 py-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <p className="truncate text-sm font-medium text-fg">
+              @{current.username ?? "unknown"}
+            </p>
             {kind === "workflow" && (
               <span
                 title="ComfyUI workflow available"
-                className="grid h-5 w-5 place-items-center rounded bg-[var(--color-workflow)]/15 text-[var(--color-workflow)]"
+                className="inline-flex shrink-0 items-center gap-1 rounded bg-[var(--color-workflow)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--color-workflow)]"
               >
                 <Workflow className="h-3 w-3" strokeWidth={2.25} />
+                {nodeCount != null ? `${nodeCount} nodes` : "Graph"}
               </span>
             )}
-            <span className="text-xs text-[var(--color-muted)]">#{current.id}</span>
+            {kind === "meta" && (
+              <span className="shrink-0 rounded bg-white/8 px-1.5 py-0.5 text-[10px] text-muted">
+                Meta only
+              </span>
+            )}
           </div>
-          <p className="text-sm font-medium">@{current.username ?? "unknown"}</p>
-          {kind === "workflow" && (
-            <p className="text-[11px] text-[var(--color-workflow)]">
-              {comfy?.workflow
-                ? `${Array.isArray(comfy.workflow.nodes) ? comfy.workflow.nodes.length : "?"} nodes`
-                : "API prompt graph"}{" "}
-              ready for ComfyUI
-            </p>
-          )}
-          {kind === "meta" && (
-            <p className="text-[11px] text-[var(--color-muted)]">
-              Has prompts/settings only — not a full ComfyUI workflow
-            </p>
-          )}
-          <p className="text-xs text-[var(--color-muted)]">
-            {formatCount(current.stats?.heartCount ?? current.stats?.likeCount)} hearts ·{" "}
-            {formatCount(current.stats?.commentCount)} comments
-          </p>
+          <div className="mt-1 flex items-center gap-2.5 text-[11px] text-muted">
+            <span className="tabular-nums">#{current.id}</span>
+            <span className="inline-flex items-center gap-1" title="Hearts">
+              <Heart className="h-3 w-3" strokeWidth={2} />
+              <span className="tabular-nums">{hearts}</span>
+            </span>
+            <span className="inline-flex items-center gap-1" title="Comments">
+              <MessageCircle className="h-3 w-3" strokeWidth={2} />
+              <span className="tabular-nums">{comments}</span>
+            </span>
+          </div>
         </div>
         <Button variant="ghost" size="icon" onClick={onClose}>
           <X className="h-4 w-4" />
@@ -202,6 +220,18 @@ export function DetailPanel({
           </Section>
         )}
 
+        {vaes.length > 0 && (
+          <Section title="VAEs">
+            <ResourceList items={vaes} />
+          </Section>
+        )}
+
+        {embeddings.length > 0 && (
+          <Section title="Embeddings">
+            <ResourceList items={embeddings} />
+          </Section>
+        )}
+
         {otherResources.length > 0 && (
           <Section title="Other">
             <ResourceList items={otherResources} />
@@ -221,7 +251,7 @@ export function DetailPanel({
               </Button>
             }
           >
-            <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed text-[var(--color-fg)]/90">
+            <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-[var(--color-fg)]/90">
               {prompt}
             </pre>
           </Section>
@@ -240,7 +270,7 @@ export function DetailPanel({
               </Button>
             }
           >
-            <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed text-[var(--color-fg)]/90">
+            <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-[var(--color-fg)]/90">
               {negative}
             </pre>
           </Section>
@@ -268,62 +298,115 @@ export function DetailPanel({
               </div>
             }
           >
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[var(--color-muted)]">
-              {workflow.slice(0, 4000)}
-              {workflow.length > 4000 ? "\n…" : ""}
+            <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[var(--color-muted)]">
+              {workflow}
             </pre>
           </Section>
         )}
 
-        {status && (
-          <p className="mt-2 text-xs text-[var(--color-accent)]">{status}</p>
-        )}
       </div>
     </aside>
   );
 }
 
+function formatWeight(weight: number) {
+  const rounded = Math.round(weight * 100) / 100;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2);
+}
+
 function ResourceList({ items }: { items: UsedResource[] }) {
+  const enqueueResource = useDownloadStore((s) => s.enqueueResource);
+  const jobs = useDownloadStore((s) => s.jobs);
+
   return (
-    <ul className="space-y-1.5">
-      {items.map((item) => (
-        <li
-          key={`${item.kind}-${item.name}-${item.version ?? ""}-${item.modelVersionId ?? ""}`}
-          className="text-xs leading-snug"
-        >
-          <div className="flex items-start justify-between gap-2">
-            {item.modelId ? (
+    <ul className="space-y-1">
+      {items.map((item) => {
+        const active = jobs.find(
+          (j) =>
+            j.name === item.name &&
+            j.modelVersionId === item.modelVersionId &&
+            (j.status === "queued" ||
+              j.status === "resolving" ||
+              j.status === "downloading" ||
+              j.status === "paused"),
+        );
+        return (
+          <li
+            key={`${item.kind}-${item.name}-${item.version ?? ""}-${item.modelVersionId ?? ""}`}
+            className="text-xs"
+          >
+            <div className="flex h-7 items-center gap-1">
               <button
                 type="button"
-                className="min-w-0 text-left text-[var(--color-fg)] hover:text-[var(--color-accent)]"
+                className="min-w-0 flex-1 truncate text-left font-medium text-[var(--color-fg)] hover:text-[var(--color-accent)]"
+                title={`${item.name} — click to copy`}
                 onClick={() => {
-                  const url = item.modelVersionId
-                    ? `https://civitai.com/models/${item.modelId}?modelVersionId=${item.modelVersionId}`
-                    : `https://civitai.com/models/${item.modelId}`;
-                  void openUrl(url);
+                  void navigator.clipboard.writeText(item.name).then(() => {
+                    notify.success("Name copied");
+                  });
                 }}
-                title="Open on Civitai"
               >
-                <span className="break-words font-medium">{item.name}</span>
-              </button>
-            ) : (
-              <span className="min-w-0 break-words font-medium text-[var(--color-fg)]">
                 {item.name}
-              </span>
+              </button>
+              {typeof item.weight === "number" && (
+                <span className="shrink-0 text-[10px] tabular-nums text-[var(--color-muted)]">
+                  ×{formatWeight(item.weight)}
+                </span>
+              )}
+              {item.modelId != null && (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7 shrink-0"
+                  title="Open on Civitai"
+                  onClick={() => {
+                    const url = item.modelVersionId
+                      ? `https://civitai.com/models/${item.modelId}?modelVersionId=${item.modelVersionId}`
+                      : `https://civitai.com/models/${item.modelId}`;
+                    void openUrl(url);
+                  }}
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </Button>
+              )}
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-7 w-7 shrink-0"
+                title={
+                  active
+                    ? `Download ${active.status}`
+                    : "Download model file"
+                }
+                disabled={
+                  !!active &&
+                  (active.status === "downloading" ||
+                    active.status === "resolving" ||
+                    active.status === "queued")
+                }
+                onClick={(e) => {
+                  void enqueueResource(item, {
+                    x: e.clientX,
+                    y: e.clientY,
+                  });
+                }}
+              >
+                <Download
+                  className={cn(
+                    "h-3.5 w-3.5",
+                    active && "text-[var(--color-accent)]",
+                  )}
+                />
+              </Button>
+            </div>
+            {item.version && (
+              <p className="-mt-0.5 truncate text-[10px] text-[var(--color-muted)]">
+                {item.version}
+              </p>
             )}
-            {typeof item.weight === "number" && (
-              <span className="shrink-0 text-[10px] text-[var(--color-muted)]">
-                ×{item.weight}
-              </span>
-            )}
-          </div>
-          {item.version && (
-            <p className="truncate text-[10px] text-[var(--color-muted)]">
-              {item.version}
-            </p>
-          )}
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ul>
   );
 }

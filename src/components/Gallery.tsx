@@ -13,6 +13,7 @@ import {
   useResizeObserver,
 } from "masonic";
 import { ImageCard } from "@/components/ImageCard";
+import { GallerySkeleton } from "@/components/GallerySkeleton";
 import type { CivitaiImage } from "@/api/types";
 import type { ViewMode } from "@/stores/ui";
 
@@ -151,9 +152,11 @@ export function Gallery({
         </div>
       )}
       {isFetchingNextPage && (
-        <div className="py-3 text-center text-[11px] text-[var(--color-muted)]">
-          Loading more…
-        </div>
+        <GallerySkeleton
+          viewMode={viewMode}
+          count={viewMode === "grid" ? 5 : 6}
+          className="mt-[2px]"
+        />
       )}
     </div>
   );

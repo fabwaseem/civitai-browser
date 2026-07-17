@@ -6,6 +6,7 @@ import {
   RotateCcw,
   Settings,
   SlidersHorizontal,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,8 +17,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useFilterStore } from "@/stores/filters";
+import { useFilterStore, isFiltersDirty } from "@/stores/filters";
+import { useSettingsStore } from "@/stores/settings";
 import { useUiStore, type ViewMode } from "@/stores/ui";
+import { useDownloadStore } from "@/stores/downloads";
 import type {
   NsfwOption,
   PeriodOption,
@@ -47,16 +50,31 @@ const VIEWS: { id: ViewMode; icon: typeof Columns3; label: string }[] = [
 interface FilterBarProps {
   onRefresh: () => void;
   onOpenSettings: () => void;
+  onOpenDownloads: () => void;
   isFetching: boolean;
 }
 
 export function FilterBar({
   onRefresh,
   onOpenSettings,
+  onOpenDownloads,
   isFetching,
 }: FilterBarProps) {
   const filters = useFilterStore();
+  const defaultNsfw = useSettingsStore((s) => s.defaultNsfw);
+  const filtersDirty = isFiltersDirty(filters, defaultNsfw);
   const { viewMode, setViewMode, filtersOpen, toggleFiltersOpen } = useUiStore();
+  const activeDownloads = useDownloadStore(
+    (s) =>
+      s.jobs.filter(
+        (j) =>
+          j.status === "queued" ||
+          j.status === "resolving" ||
+          j.status === "downloading" ||
+          j.status === "paused",
+      ).length,
+  );
+  const badgePulse = useDownloadStore((s) => s.badgePulse);
 
   return (
     <header className="glass sticky top-0 z-20 rounded-none border-x-0 border-t-0 px-3 py-2">
@@ -109,6 +127,28 @@ export function FilterBar({
           ))}
         </CompactSelect>
 
+        <Button
+          variant={filtersOpen ? "default" : "secondary"}
+          size="sm"
+          onClick={toggleFiltersOpen}
+        >
+          <SlidersHorizontal className="h-3.5 w-3.5" />
+          More
+        </Button>
+        {filtersDirty && (
+          <Button
+            variant="secondary"
+            size="icon"
+            onClick={() => filters.reset()}
+            title="Reset filters"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+          </Button>
+        )}
+        <Button variant="secondary" size="icon" onClick={onRefresh} title="Refresh">
+          <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
+        </Button>
+
         <div className="glass-chip ml-auto flex items-center rounded-md p-0.5">
           {VIEWS.map(({ id, icon: Icon, label }) => (
             <button
@@ -129,23 +169,22 @@ export function FilterBar({
         </div>
 
         <Button
-          variant={filtersOpen ? "default" : "secondary"}
-          size="sm"
-          onClick={toggleFiltersOpen}
-        >
-          <SlidersHorizontal className="h-3.5 w-3.5" />
-          More
-        </Button>
-        <Button variant="secondary" size="icon" onClick={onRefresh} title="Refresh">
-          <RefreshCw className={`h-3.5 w-3.5 ${isFetching ? "animate-spin" : ""}`} />
-        </Button>
-        <Button
+          id="app-downloads-btn"
           variant="secondary"
           size="icon"
-          onClick={() => filters.reset()}
-          title="Reset filters"
+          onClick={onOpenDownloads}
+          title="Downloads"
+          className="relative"
         >
-          <RotateCcw className="h-3.5 w-3.5" />
+          <Download className="h-3.5 w-3.5" />
+          {activeDownloads > 0 && (
+            <span
+              key={badgePulse}
+              className="download-badge-pop absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-[var(--color-accent)] px-0.5 text-[9px] font-semibold text-[var(--color-accent-ink)]"
+            >
+              {activeDownloads > 9 ? "9+" : activeDownloads}
+            </span>
+          )}
         </Button>
         <Button variant="secondary" size="icon" onClick={onOpenSettings}>
           <Settings className="h-3.5 w-3.5" />

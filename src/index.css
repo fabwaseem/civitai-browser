@@ -101,3 +101,72 @@ body {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+@keyframes download-badge-pop {
+  0% {
+    transform: scale(0.5);
+  }
+  55% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes download-tray-pop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.download-badge-pop {
+  animation: download-badge-pop 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+#app-downloads-btn.download-tray-pop {
+  animation: download-tray-pop 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background-image: linear-gradient(
+    105deg,
+    rgba(255, 255, 255, 0.04) 0%,
+    rgba(255, 255, 255, 0.04) 38%,
+    rgba(184, 255, 224, 0.1) 50%,
+    rgba(255, 255, 255, 0.04) 62%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.35s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer {
+    animation: none;
+    background-image: none;
+  }
+}
+
+/* react-hot-toast — mint glass */
+[data-sonner-toaster],
+div[role="status"] {
+  font-family: var(--font-sans);
+}
+
+

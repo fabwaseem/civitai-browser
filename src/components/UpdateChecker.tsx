@@ -6,6 +6,7 @@ import {
   type UpdateOffer,
 } from "@/lib/updater";
 import { Button } from "@/components/ui/button";
+import { notify } from "@/lib/toast";
 
 /** Launch check + mint banner when an update is ready. */
 export function UpdateChecker() {
@@ -35,10 +36,13 @@ export function UpdateChecker() {
     setBusy(true);
     setError(null);
     try {
+      notify.info("Installing update…");
       await installUpdateAndRelaunch(offer.update);
     } catch (e) {
       setBusy(false);
-      setError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+      notify.error(msg);
     }
   }
 

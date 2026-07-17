@@ -1,5 +1,7 @@
 mod cache;
 mod civitai;
+mod comfy;
+mod download;
 mod error;
 
 use cache::{
@@ -8,8 +10,13 @@ use cache::{
     PreviewImageParams, SaveImageParams,
 };
 use civitai::{fetch_images, FetchImagesParams, ImagesResponse};
+use comfy::{inspect_comfy_models_dir, ComfyModelsDirInfo};
+use download::{
+    resolve_model_file, start_file_download, DownloadManager, ResolveModelParams,
+    ResolvedModelFile, StartFileDownloadParams,
+};
 use error::AppResult;
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 
 #[tauri::command]
 async fn fetch_civitai_images(params: FetchImagesParams) -> AppResult<ImagesResponse> {
@@ -43,6 +50,17 @@ fn open_path_cmd(path: String) -> AppResult<()> {
 }
 
 #[tauri::command]
+fn write_text_file_cmd(path: String, contents: String) -> AppResult<()> {
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(path, contents)?;
+    Ok(())
+}
+
+#[tauri::command]
 fn clear_image_cache_cmd(app: AppHandle) -> AppResult<u64> {
     clear_image_cache(&app)
 }
@@ -60,6 +78,39 @@ async fn ensure_drag_ready_cmd(
     ensure_drag_ready(&app, params).await
 }
 
+#[tauri::command]
+async fn resolve_model_file_cmd(params: ResolveModelParams) -> AppResult<ResolvedModelFile> {
+    resolve_model_file(params).await
+}
+
+#[tauri::command]
+async fn start_file_download_cmd(
+    app: AppHandle,
+    manager: State<'_, DownloadManager>,
+    params: StartFileDownloadParams,
+) -> AppResult<String> {
+    start_file_download(app, manager.inner(), params).await
+}
+
+#[tauri::command]
+fn cancel_file_download_cmd(
+    manager: State<'_, DownloadManager>,
+    job_id: String,
+    discard_partial: Option<bool>,
+) -> AppResult<bool> {
+    Ok(manager.cancel(&job_id, discard_partial.unwrap_or(true)))
+}
+
+#[tauri::command]
+fn clear_download_partial_cmd(dest_path: String) -> AppResult<bool> {
+    download::clear_download_partial(&dest_path)
+}
+
+#[tauri::command]
+fn inspect_comfy_models_dir_cmd(path: String) -> AppResult<ComfyModelsDirInfo> {
+    inspect_comfy_models_dir(path)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -71,6 +122,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(DownloadManager::new())
         .invoke_handler(tauri::generate_handler![
             fetch_civitai_images,
             ensure_cached_image_cmd,
@@ -79,7 +131,13 @@ pub fn run() {
             lookup_drag_ready_cmd,
             save_image_cmd,
             open_path_cmd,
-            clear_image_cache_cmd
+            write_text_file_cmd,
+            clear_image_cache_cmd,
+            resolve_model_file_cmd,
+            start_file_download_cmd,
+            cancel_file_download_cmd,
+            clear_download_partial_cmd,
+            inspect_comfy_models_dir_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
