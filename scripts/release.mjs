@@ -206,21 +206,44 @@ function ensureSigningEnv() {
   }
 }
 
-function findNsisArtifacts() {
+/**
+ * Stable updater asset name — no spaces (GitHub turns them into dots and
+ * breaks URLs that still contain spaces).
+ */
+function updaterAssetBase(version) {
+  return `civitai-browser-${version}-x64-setup`;
+}
+
+/**
+ * Only artifacts for this release version (avoids uploading leftover
+ * Civitai Browser_0.1.0_… next to 2.0.0 after a bump).
+ */
+function findNsisArtifacts(version) {
   const nsisDir = path.join(root, "src-tauri", "target", "release", "bundle", "nsis");
   if (!fs.existsSync(nsisDir)) return { nsisDir, files: [] };
-  const names = fs.readdirSync(nsisDir);
-  const prefer = (pred) => names.filter(pred);
-  const zips = prefer((f) => f.endsWith(".nsis.zip"));
-  const exes = prefer((f) => f.endsWith("-setup.exe") || (f.endsWith(".exe") && !f.endsWith(".sig")));
+  const token = `_${version}_`;
+  const names = fs.readdirSync(nsisDir).filter((f) => f.includes(token));
+  const zips = names.filter((f) => f.endsWith(".nsis.zip"));
+  const exes = names.filter(
+    (f) =>
+      (f.endsWith("-setup.exe") || (f.endsWith(".exe") && !f.endsWith(".sig"))) &&
+      !f.startsWith("civitai-browser-"), // ignore our renamed copies
+  );
   const picked = [...zips, ...exes];
   const files = [];
+  const base = updaterAssetBase(version);
   for (const name of picked) {
     const full = path.join(nsisDir, name);
     const sig = `${full}.sig`;
-    files.push({ name, full, sig: fs.existsSync(sig) ? sig : null });
+    const ext = name.endsWith(".nsis.zip") ? ".nsis.zip" : path.extname(name);
+    const githubName = `${base}${ext === ".exe" ? ".exe" : ext}`;
+    files.push({
+      name,
+      githubName,
+      full,
+      sig: fs.existsSync(sig) ? sig : null,
+    });
   }
-  // Also collect any loose .sig that matches
   return { nsisDir, files };
 }
 
@@ -230,7 +253,8 @@ function writeLatestJson(version, notes, artifact) {
     fail(`Missing signature for ${artifact.name}. Build with signing key enabled.`);
   }
   const signature = fs.readFileSync(sigPath, "utf8").trim();
-  const url = `https://github.com/${REPO}/releases/download/v${version}/${artifact.name}`;
+  const asset = artifact.githubName;
+  const url = `https://github.com/${REPO}/releases/download/v${version}/${asset}`;
   const manifest = {
     version,
     notes,
@@ -245,6 +269,7 @@ function writeLatestJson(version, notes, artifact) {
   const outPath = path.join(root, "latest.json");
   writeJson(outPath, manifest);
   console.log(`Wrote ${outPath}`);
+  console.log(`  updater url → ${url}`);
   return outPath;
 }
 
@@ -304,16 +329,26 @@ function main() {
   }
 
   log("Locating NSIS / updater artifacts");
-  const { nsisDir, files } = findNsisArtifacts();
+  const { nsisDir, files } = findNsisArtifacts(version);
   if (!files.length) {
-    fail(`No NSIS artifacts in ${nsisDir}. Run a full build first.`);
+    fail(
+      [
+        `No NSIS artifacts for v${version} in ${nsisDir}.`,
+        "Run a full build first (without --skip-build), or clean stale bundles.",
+      ].join("\n"),
+    );
   }
   // Prefer zip (updater) for latest.json; still upload exe too
   const updaterArtifact =
     files.find((f) => f.name.endsWith(".nsis.zip")) || files[0];
   console.log(
-    "Artifacts:\n" +
-      files.map((f) => `  - ${f.name}${f.sig ? " (+ .sig)" : " (NO .sig)"}`).join("\n"),
+    "Artifacts (this version only):\n" +
+      files
+        .map(
+          (f) =>
+            `  - ${f.name} → ${f.githubName}${f.sig ? " (+ .sig)" : " (NO .sig)"}`,
+        )
+        .join("\n"),
   );
 
   log("Writing latest.json");
@@ -381,10 +416,11 @@ function main() {
       run("gh", ["release", "delete", tag, "--repo", REPO, "--yes"]);
     }
 
+    // path#name → GitHub asset name (spaces become dots; keep URL stable)
     const assetArgs = [];
     for (const f of files) {
-      assetArgs.push(f.full);
-      if (f.sig) assetArgs.push(f.sig);
+      assetArgs.push(`${f.full}#${f.githubName}`);
+      if (f.sig) assetArgs.push(`${f.sig}#${f.githubName}.sig`);
     }
     assetArgs.push(latestPath);
 

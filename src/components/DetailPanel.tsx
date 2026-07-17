@@ -5,20 +5,17 @@ import {
   ExternalLink,
   Heart,
   MessageCircle,
-  Workflow,
   X,
 } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button } from "@/components/ui/button";
 import { BlurPlaceholder } from "@/components/BlurPlaceholder";
 import {
-  extractComfyBundle,
   extractNegativePrompt,
   extractPrompt,
   extractUsedResources,
   extractWorkflowJson,
   galleryImageUrl,
-  getMetaKind,
   type UsedResource,
 } from "@/api/classifier";
 import { comfyExportArgs } from "@/api/comfyExport";
@@ -51,8 +48,6 @@ export function DetailPanel({
   if (!image) return null;
 
   const current = image;
-  const kind = getMetaKind(current);
-  const comfy = extractComfyBundle(current.meta);
   const prompt = extractPrompt(current.meta);
   const negative = extractNegativePrompt(current.meta);
   const workflow = extractWorkflowJson(current.meta);
@@ -63,9 +58,6 @@ export function DetailPanel({
   const embeddings = resources.filter((r) => r.kind === "embedding");
   const otherResources = resources.filter((r) => r.kind === "other");
   const previewSrc = galleryImageUrl(current, 640);
-  const nodeCount = Array.isArray(comfy?.workflow?.nodes)
-    ? comfy.workflow.nodes.length
-    : null;
   const hearts = formatCount(
     current.stats?.heartCount ?? current.stats?.likeCount,
   );
@@ -126,25 +118,9 @@ export function DetailPanel({
     <aside className="glass-strong flex h-full w-[340px] shrink-0 flex-col border-y-0 border-r-0">
       <div className="flex items-start justify-between gap-2 border-b border-white/10 px-3 py-2.5">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <p className="truncate text-sm font-medium text-fg">
-              @{current.username ?? "unknown"}
-            </p>
-            {kind === "workflow" && (
-              <span
-                title="ComfyUI workflow available"
-                className="inline-flex shrink-0 items-center gap-1 rounded bg-[var(--color-workflow)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--color-workflow)]"
-              >
-                <Workflow className="h-3 w-3" strokeWidth={2.25} />
-                {nodeCount != null ? `${nodeCount} nodes` : "Graph"}
-              </span>
-            )}
-            {kind === "meta" && (
-              <span className="shrink-0 rounded bg-white/8 px-1.5 py-0.5 text-[10px] text-muted">
-                Meta only
-              </span>
-            )}
-          </div>
+          <p className="truncate text-sm font-medium text-fg">
+            @{current.username ?? "unknown"}
+          </p>
           <div className="mt-1 flex items-center gap-2.5 text-[11px] text-muted">
             <span className="tabular-nums">#{current.id}</span>
             <span className="inline-flex items-center gap-1" title="Hearts">

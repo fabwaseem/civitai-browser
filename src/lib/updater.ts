@@ -1,10 +1,17 @@
-import { check, type Update } from "@tauri-apps/plugin-updater";
+import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
 export type UpdateOffer = {
   version: string;
   notes: string;
   update: Update;
+};
+
+export type UpdateProgress = {
+  phase: "downloading" | "installing" | "done";
+  downloaded: number;
+  total: number | null;
+  percent: number | null;
 };
 
 /** Quiet network / missing-release errors on launch. */
@@ -24,8 +31,39 @@ export async function probeForUpdate(): Promise<UpdateOffer | null> {
   };
 }
 
-export async function installUpdateAndRelaunch(update: Update) {
-  await update.downloadAndInstall();
+export async function installUpdateAndRelaunch(
+  update: Update,
+  onProgress?: (progress: UpdateProgress) => void,
+) {
+  let downloaded = 0;
+  let total: number | null = null;
+
+  const emit = (phase: UpdateProgress["phase"]) => {
+    onProgress?.({
+      phase,
+      downloaded,
+      total,
+      percent:
+        total && total > 0
+          ? Math.min(100, Math.round((downloaded / total) * 100))
+          : null,
+    });
+  };
+
+  await update.downloadAndInstall((event: DownloadEvent) => {
+    if (event.event === "Started") {
+      downloaded = 0;
+      total = event.data.contentLength ?? null;
+      emit("downloading");
+    } else if (event.event === "Progress") {
+      downloaded += event.data.chunkLength;
+      emit("downloading");
+    } else if (event.event === "Finished") {
+      emit("installing");
+    }
+  });
+
+  emit("done");
   await relaunch();
 }
 

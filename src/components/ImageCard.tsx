@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Heart, MessageCircle, Workflow } from "lucide-react";
+import { Heart, MessageCircle } from "lucide-react";
 import { BlurPlaceholder } from "@/components/BlurPlaceholder";
-import { galleryImageUrl, getMetaKind } from "@/api/classifier";
+import { galleryImageUrl } from "@/api/classifier";
 import type { CivitaiImage } from "@/api/types";
 import { formatCount, cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/ui";
@@ -32,7 +32,6 @@ export function ImageCard({
   const imgRef = useRef<HTMLImageElement>(null);
   const [loaded, setLoaded] = useState(() => loadedIds.has(data.id));
   const selected = useUiStore((s) => s.selectedId === data.id);
-  const kind = getMetaKind(data);
   const src = galleryImageUrl(data, GALLERY_WIDTH);
   const masonryHeight =
     variant === "masonry" && width != null && data.width > 0
@@ -90,15 +89,6 @@ export function ImageCard({
         )}
         draggable={false}
       />
-
-      {kind === "workflow" && (
-        <span
-          title="ComfyUI workflow available"
-          className="pointer-events-none absolute left-1 top-1 grid h-5 w-5 place-items-center rounded-sm bg-black/55 text-[var(--color-workflow)] backdrop-blur-sm"
-        >
-          <Workflow className="h-3 w-3" strokeWidth={2.25} />
-        </span>
-      )}
 
       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent p-1.5 pt-6 opacity-0 transition group-hover:opacity-100">
         <div className="flex items-center justify-between text-[10px] text-white/90">
