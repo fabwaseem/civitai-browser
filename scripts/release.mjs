@@ -35,6 +35,41 @@ const root = path.resolve(__dirname, "..");
 const REPO = process.env.GITHUB_REPO || "fabwaseem/civitai-browser";
 const DEFAULT_KEY = path.join(os.homedir(), ".tauri", "civitai-browser.key");
 
+function loadDotEnv() {
+  const envPath = path.join(root, ".env");
+  if (!fs.existsSync(envPath)) return;
+  const text = fs.readFileSync(envPath, "utf8");
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    if (process.env[key] === undefined) process.env[key] = val;
+  }
+  console.log("Loaded .env");
+}
+
+/** Prefer explicit release PAT, then generic tokens (gh CLI reads GH_TOKEN). */
+function applyGhToken() {
+  const token =
+    process.env.RELEASES_GITHUB_TOKEN ||
+    process.env.GH_TOKEN ||
+    process.env.GITHUB_TOKEN ||
+    "";
+  if (!token) return false;
+  process.env.GH_TOKEN = token;
+  process.env.GITHUB_TOKEN = token;
+  return true;
+}
+
 function arg(name, fallback) {
   const idx = process.argv.indexOf(`--${name}`);
   if (idx >= 0 && process.argv[idx + 1] && !process.argv[idx + 1].startsWith("--")) {
@@ -158,18 +193,36 @@ function ensureGh() {
   const res = spawnOk("gh", ["--version"], { stdio: "pipe", encoding: "utf8" });
   if (res.status === 0) {
     console.log((res.stdout || "").split("\n")[0]);
-    return;
+  } else {
+    fail(
+      [
+        "GitHub CLI (gh) is required for releases.",
+        "Install:",
+        "  winget install --id GitHub.cli",
+        "Then:",
+        "  gh auth login",
+        "Or set GH_TOKEN / RELEASES_GITHUB_TOKEN in .env",
+        "Or open a new terminal after install so PATH updates.",
+      ].join("\n"),
+    );
   }
-  fail(
-    [
-      "GitHub CLI (gh) is required for releases.",
-      "Install:",
-      "  winget install --id GitHub.cli",
-      "Then:",
-      "  gh auth login",
-      "Or open a new terminal after install so PATH updates.",
-    ].join("\n"),
+
+  const probe = spawnOk(
+    "gh",
+    ["api", `repos/${REPO}`, "--jq", ".full_name"],
+    { stdio: "pipe", encoding: "utf8" },
   );
+  if (probe.status !== 0) {
+    fail(
+      [
+        `Cannot access ${REPO} via gh.`,
+        "Set GH_TOKEN or RELEASES_GITHUB_TOKEN in .env (repo Contents: write),",
+        "or run: gh auth login",
+        (probe.stderr || probe.stdout || "").trim(),
+      ].join("\n"),
+    );
+  }
+  console.log(`Release target: ${(probe.stdout || "").trim()}`);
 }
 
 function ensureSigningEnv() {
@@ -274,15 +327,22 @@ function writeLatestJson(version, notes, artifact) {
 }
 
 function main() {
+  loadDotEnv();
+  applyGhToken();
+
   const dryRun = hasFlag("dry-run");
   const skipBuild = hasFlag("skip-build");
   const skipGit = hasFlag("skip-git");
+  const forceTag = hasFlag("force-tag");
   const bump = arg("bump"); // patch | minor | major
   const explicitVersion = arg("version");
   const notes =
     arg("notes") ||
     process.env.RELEASE_NOTES ||
     null;
+
+  log("Preflight");
+  ensureGh();
 
   log("Reading current version");
   const conf = readJson(path.join(root, "src-tauri", "tauri.conf.json"));
@@ -373,18 +433,32 @@ function main() {
       } else {
         console.log("No version file changes to commit");
       }
-      // Recreate tag if exists locally
-      spawnOk("git", ["tag", "-d", tag], { stdio: "pipe" });
+
+      const localTag = spawnOk("git", ["rev-parse", tag], {
+        stdio: "pipe",
+        encoding: "utf8",
+      });
+      if (localTag.status === 0) {
+        if (!forceTag) {
+          fail(
+            `Tag ${tag} already exists locally. Use --force-tag to recreate, or bump the version.`,
+          );
+        }
+        spawnOk("git", ["tag", "-d", tag], { stdio: "pipe" });
+      }
       run("git", ["tag", "-a", tag, "-m", releaseNotes]);
       run("git", ["push", "origin", "HEAD"]);
-      run("git", ["push", "origin", tag, "--force"]);
+      if (forceTag) {
+        run("git", ["push", "origin", tag, "--force"]);
+      } else {
+        run("git", ["push", "origin", tag]);
+      }
     }
   } else {
     log("Skipping git (--skip-git)");
   }
 
   log("Creating GitHub Release + uploading assets");
-  ensureGh();
 
   const uploadArgs = [
     "release",
@@ -416,15 +490,27 @@ function main() {
       run("gh", ["release", "delete", tag, "--repo", REPO, "--yes"]);
     }
 
-    // Upload already-renamed staged files (no path#name — broken on Windows)
-    const assetArgs = [];
+    // Stage renamed copies so spaces become dots (GitHub asset names)
+    const staging = path.join(root, ".release-staging");
+    fs.rmSync(staging, { recursive: true, force: true });
+    fs.mkdirSync(staging, { recursive: true });
+    const stagedUploads = [];
     for (const f of files) {
-      assetArgs.push(f.full);
-      if (f.sig) assetArgs.push(f.sig);
+      const staged = path.join(staging, f.githubName);
+      fs.copyFileSync(f.full, staged);
+      stagedUploads.push(staged);
+      if (f.sig) {
+        const stagedSig = path.join(staging, `${f.githubName}.sig`);
+        fs.copyFileSync(f.sig, stagedSig);
+        stagedUploads.push(stagedSig);
+      }
     }
-    assetArgs.push(latestPath);
+    const stagedLatest = path.join(staging, "latest.json");
+    fs.copyFileSync(latestPath, stagedLatest);
+    stagedUploads.push(stagedLatest);
 
-    run("gh", [...uploadArgs, ...assetArgs]);
+    run("gh", [...uploadArgs, ...stagedUploads]);
+    fs.rmSync(staging, { recursive: true, force: true });
 
     // Sanity: installer URL in latest.json must exist
     const checkUrl = `https://github.com/${REPO}/releases/download/${tag}/${updaterArtifact.githubName}`;

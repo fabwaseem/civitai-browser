@@ -49,6 +49,8 @@ Put the **public** key into `src-tauri/tauri.conf.json` → `plugins.updater.pub
 
 ## Release (single command)
 
+Auth (first match): `RELEASES_GITHUB_TOKEN` / `GH_TOKEN` in `.env` (see `.env.example`), or `gh auth login`.
+
 After you push your code changes to GitHub:
 
 ```bash
@@ -67,6 +69,7 @@ The script will:
 3. Write `latest.json` for the updater endpoint
 4. Commit, tag `vX.Y.Z`, and push
 5. Create the GitHub Release and upload installer, `.sig`, and `latest.json`
+6. Verify the installer download URL returns HTTP 200
 
 Useful flags:
 
@@ -74,6 +77,7 @@ Useful flags:
 | -------------- | -------------------------------------- |
 | `--skip-build` | Reuse an existing `tauri build` output |
 | `--skip-git`   | Don’t commit/tag/push                  |
+| `--force-tag`  | Recreate an existing tag               |
 | `--dry-run`    | Print steps only                       |
 
 Updater endpoint used by the app:

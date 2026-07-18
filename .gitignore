@@ -20,6 +20,8 @@ app-icon.svg
 .env
 .env.*
 
+.release-staging/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
