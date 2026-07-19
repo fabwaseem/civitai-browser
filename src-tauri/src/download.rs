@@ -163,8 +163,15 @@ pub struct ResolveModelParams {
     pub model_version_id: Option<i64>,
     pub model_id: Option<i64>,
     pub name: Option<String>,
+    /// Preferred on-disk filename (Comfy workflow name). Used to pick the exact
+    /// file/version and as the saved destination name.
+    pub preferred_file_name: Option<String>,
+    /// Civitai file hash (AutoV1/V2/V3, SHA256, BLAKE3, CRC32)
+    pub hash: Option<String>,
     pub kind: Option<String>,
     pub api_token: Option<String>,
+    /// Hugging Face token for mirrors / gated repos
+    pub hf_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,9 +194,28 @@ pub struct StartFileDownloadParams {
     pub url: String,
     pub dest_path: String,
     pub api_token: Option<String>,
+    pub hf_token: Option<String>,
 }
 
-fn friendly_http_error(status: reqwest::StatusCode, body: &str) -> String {
+fn is_huggingface_url(url: &str) -> bool {
+    url.contains("huggingface.co")
+}
+
+fn bearer_for_url<'a>(
+    url: &str,
+    civitai_token: Option<&'a str>,
+    hf_token: Option<&'a str>,
+) -> Option<&'a str> {
+    if is_huggingface_url(url) {
+        hf_token.filter(|t| !t.is_empty())
+    } else if url.contains("civitai.com") {
+        civitai_token.filter(|t| !t.is_empty())
+    } else {
+        None
+    }
+}
+
+fn friendly_http_error(status: reqwest::StatusCode, body: &str, url: &str) -> String {
     let parsed: Option<serde_json::Value> = serde_json::from_str(body).ok();
     let api_message = parsed.as_ref().and_then(|v| {
         v.get("message")
@@ -198,26 +224,43 @@ fn friendly_http_error(status: reqwest::StatusCode, body: &str) -> String {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty() && s != "Unauthorized" && s != "Error")
     });
+    let is_hf = is_huggingface_url(url);
+    let token_hint = if is_hf {
+        "Add your Hugging Face token in Settings."
+    } else {
+        "Add your Civitai API token in Settings."
+    };
 
     match status.as_u16() {
         401 => {
             let detail = api_message.unwrap_or_else(|| {
                 "This file requires authentication.".into()
             });
-            format!("{detail} Add your Civitai API token in Settings.")
+            format!("{detail} {token_hint}")
         }
         403 => api_message.unwrap_or_else(|| {
-            "Access denied. You may need a Civitai API token or early-access permission."
-                .into()
+            if is_hf {
+                "Access denied. You may need a Hugging Face token or accept the repo license."
+                    .into()
+            } else {
+                "Access denied. You may need a Civitai API token or early-access permission."
+                    .into()
+            }
         }),
-        404 => api_message.unwrap_or_else(|| "File not found on Civitai.".into()),
+        404 => api_message.unwrap_or_else(|| {
+            if is_hf {
+                "File not found on Hugging Face.".into()
+            } else {
+                "File not found on Civitai.".into()
+            }
+        }),
         429 => "Too many requests — wait a moment and try again.".into(),
         _ => api_message.unwrap_or_else(|| format!("Download failed (HTTP {status})")),
     }
 }
 
 fn friendly_api_error(status: reqwest::StatusCode, body: &str) -> String {
-    friendly_http_error(status, body)
+    friendly_http_error(status, body, "https://civitai.com/")
 }
 
 fn sanitize_filename(name: &str) -> String {
@@ -237,21 +280,542 @@ fn sanitize_filename(name: &str) -> String {
     }
 }
 
-fn pick_primary_file(files: &[serde_json::Value]) -> Option<&serde_json::Value> {
+fn basename_only(name: &str) -> &str {
+    Path::new(name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name)
+}
+
+fn file_stem_lower(name: &str) -> String {
+    Path::new(basename_only(name))
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name)
+        .to_lowercase()
+}
+
+/// Alphanumeric-only key so spaces/underscores/dots don't break matching.
+fn alnum_key(name: &str) -> String {
+    file_stem_lower(name)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
+}
+
+/// Drop training noise: epoch10, step1000 (digits already glued in alnum key).
+fn strip_train_suffix(key: &str) -> String {
+    let mut s = key.to_string();
+    loop {
+        let before = s.len();
+        for prefix in ["epoch", "steps", "step"] {
+            if let Some(i) = s.rfind(prefix) {
+                let rest = &s[i + prefix.len()..];
+                if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+                    s.truncate(i);
+                    break;
+                }
+            }
+        }
+        if s.len() == before {
+            break;
+        }
+    }
+    s
+}
+
+fn names_equivalent(a: &str, b: &str) -> bool {
+    let a = basename_only(a);
+    let b = basename_only(b);
+    if a.eq_ignore_ascii_case(b) {
+        return true;
+    }
+    if file_stem_lower(a) == file_stem_lower(b) {
+        return true;
+    }
+    names_fuzzy_match(a, b)
+}
+
+/// Match workflow filenames to Civitai names across spaces/underscores/epoch suffixes.
+/// e.g. KR2_Tiger_…_epoch_10 ≈ "KR2 Tiger Kittens Calliope.safetensors"
+fn names_fuzzy_match(a: &str, b: &str) -> bool {
+    let ka = strip_train_suffix(&alnum_key(a));
+    let kb = strip_train_suffix(&alnum_key(b));
+    if ka.is_empty() || kb.is_empty() {
+        return false;
+    }
+    if ka == kb {
+        return true;
+    }
+    let (short, long) = if ka.len() <= kb.len() {
+        (ka.as_str(), kb.as_str())
+    } else {
+        (kb.as_str(), ka.as_str())
+    };
+    // Require a meaningful prefix to avoid weak hits like "vae"
+    short.len() >= 10 && long.contains(short)
+}
+
+fn file_json_name(file: &serde_json::Value) -> Option<&str> {
+    file.get("name").and_then(|v| v.as_str())
+}
+
+fn pick_file_for_version<'a>(
+    files: &'a [serde_json::Value],
+    preferred: Option<&str>,
+) -> Option<&'a serde_json::Value> {
+    if let Some(pref) = preferred.filter(|s| !s.trim().is_empty()) {
+        if let Some(exact) = files.iter().find(|f| {
+            file_json_name(f).is_some_and(|n| n.eq_ignore_ascii_case(basename_only(pref)))
+        }) {
+            return Some(exact);
+        }
+        if let Some(fuzzy) = files
+            .iter()
+            .find(|f| file_json_name(f).is_some_and(|n| names_equivalent(n, pref)))
+        {
+            return Some(fuzzy);
+        }
+    }
     files
         .iter()
         .find(|f| f.get("primary").and_then(|v| v.as_bool()) == Some(true))
         .or_else(|| files.first())
 }
 
+fn version_has_matching_file(version: &serde_json::Value, preferred: &str) -> bool {
+    version
+        .get("files")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .any(|f| file_json_name(f).is_some_and(|n| names_equivalent(n, preferred)))
+}
+
+fn version_name_matches(model: &serde_json::Value, version: &serde_json::Value, preferred: &str) -> bool {
+    let model_name = model.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let ver_name = version.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    if names_fuzzy_match(preferred, model_name) {
+        return true;
+    }
+    if !ver_name.is_empty() {
+        let combined = format!("{model_name} {ver_name}");
+        if names_fuzzy_match(preferred, &combined) || names_fuzzy_match(preferred, ver_name) {
+            return true;
+        }
+    }
+    false
+}
+
+fn find_version_matching_filename(
+    versions: &[serde_json::Value],
+    preferred: &str,
+) -> Option<serde_json::Value> {
+    let pref_base = basename_only(preferred);
+    if let Some(v) = versions.iter().find(|version| {
+        version
+            .get("files")
+            .and_then(|f| f.as_array())
+            .into_iter()
+            .flatten()
+            .any(|f| file_json_name(f).is_some_and(|n| n.eq_ignore_ascii_case(pref_base)))
+    }) {
+        return Some(v.clone());
+    }
+    versions
+        .iter()
+        .find(|v| version_has_matching_file(v, preferred))
+        .cloned()
+}
+
+fn find_best_version_for_preferred(
+    model: &serde_json::Value,
+    preferred: &str,
+) -> Option<serde_json::Value> {
+    let versions = model
+        .get("modelVersions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if versions.is_empty() {
+        return None;
+    }
+    if let Some(v) = find_version_matching_filename(&versions, preferred) {
+        return Some(v);
+    }
+    if let Some(v) = versions
+        .iter()
+        .find(|v| version_name_matches(model, v, preferred))
+    {
+        return Some(v.clone());
+    }
+    // Single-version model whose name clearly matches the workflow file
+    if versions.len() == 1 && version_name_matches(model, &versions[0], preferred) {
+        return Some(versions[0].clone());
+    }
+    None
+}
+
 fn map_kind_to_civitai_type(kind: &str) -> Option<&'static str> {
     match kind {
-        "checkpoint" => Some("Checkpoint"),
+        "checkpoint" | "diffusion" => Some("Checkpoint"),
         "lora" => Some("LORA"),
         "embedding" => Some("TextualInversion"),
         "vae" => Some("VAE"),
+        "upscale" => Some("Upscaler"),
         _ => None,
     }
+}
+
+/// Well-known Comfy files that often live on HF instead of Civitai.
+fn known_mirror_candidates(file_name: &str) -> Vec<(String, String)> {
+    let key = basename_only(file_name).to_lowercase();
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut push = |url: &str, label: &str| {
+        out.push((url.to_string(), label.to_string()));
+    };
+
+    match key.as_str() {
+        "wan_2.1_vae.safetensors" | "wan2.1_vae.safetensors" | "wan21_vae.safetensors" => {
+            push(
+                "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors",
+                "Comfy-Org Wan 2.1 VAE",
+            );
+        }
+        "wan_2.2_vae.safetensors" | "wan2.2_vae.safetensors" => {
+            push(
+                "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan2.2_vae.safetensors",
+                "Comfy-Org Wan 2.2 VAE",
+            );
+        }
+        "ae.safetensors" => {
+            push(
+                "https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/ae.safetensors",
+                "FLUX.1 ae VAE",
+            );
+            push(
+                "https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/ae.safetensors",
+                "Comfy-Org FLUX ae",
+            );
+        }
+        "umt5_xxl_fp8_e4m3fn_scaled.safetensors" => {
+            push(
+                "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+                "Comfy-Org umT5-XXL",
+            );
+        }
+        "clip_l.safetensors" => {
+            push(
+                "https://huggingface.co/Comfy-Org/stable-diffusion-3.5-fp8/resolve/main/text_encoders/clip_l.safetensors",
+                "Comfy-Org CLIP-L",
+            );
+        }
+        // —— Upscalers (often .pth; many never listed as Civitai "models") ——
+        "4x-ultrasharp.pth" | "4x_ultrasharp.pth" | "4x-ultrasharp.safetensors" => {
+            push(
+                "https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth",
+                "4x-UltraSharp",
+            );
+            push(
+                "https://huggingface.co/wangkanai/flux-upscale/resolve/main/upscale_models/4x-UltraSharp.pth",
+                "4x-UltraSharp (flux-upscale)",
+            );
+        }
+        "4x-animesharp.pth" | "4x_animesharp.pth" => {
+            push(
+                "https://huggingface.co/Kim2091/AnimeSharp/resolve/main/4x-AnimeSharp.pth",
+                "4x-AnimeSharp",
+            );
+        }
+        "realesrgan_x4plus.pth" | "realesrgan-x4plus.pth" => {
+            push(
+                "https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x4.pth",
+                "RealESRGAN x4",
+            );
+            push(
+                "https://huggingface.co/wangkanai/flux-upscale/resolve/main/upscale_models/RealESRGAN_x4plus.pth",
+                "RealESRGAN_x4plus",
+            );
+        }
+        "realesrgan_x2plus.pth" | "realesrgan-x2plus.pth" => {
+            push(
+                "https://huggingface.co/wangkanai/flux-upscale/resolve/main/upscale_models/RealESRGAN_x2plus.pth",
+                "RealESRGAN_x2plus",
+            );
+        }
+        "realesrgan_x4plus_anime_6b.pth" | "realesrgan_x4plus_anime.pth" => {
+            push(
+                "https://huggingface.co/ai-forever/Real-ESRGAN/resolve/main/RealESRGAN_x4plus_anime_6B.pth",
+                "RealESRGAN anime 6B",
+            );
+        }
+        "4x_foolhardy_remacri.pth" | "4x-foolhardy-remacri.pth" => {
+            push(
+                "https://huggingface.co/FacehugmanIII/4x_foolhardy_Remacri/resolve/main/4x_foolhardy_Remacri.pth",
+                "4x Remacri",
+            );
+        }
+        _ => {}
+    }
+    out
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum UrlProbe {
+    Ok,
+    NeedsAuth,
+    Fail,
+}
+
+async fn probe_download_url(url: &str, token: Option<&str>) -> UrlProbe {
+    let client = download_client();
+    let auth = |mut req: reqwest::RequestBuilder| -> reqwest::RequestBuilder {
+        if let Some(t) = token.filter(|t| !t.is_empty()) {
+            req = req.bearer_auth(t);
+        }
+        req
+    };
+
+    // Prefer a tiny ranged GET — many HF endpoints mishandle HEAD.
+    let ranged = auth(client.get(url)).header(reqwest::header::RANGE, "bytes=0-0");
+    if let Ok(resp) = ranged.send().await {
+        let status = resp.status();
+        if status.is_success()
+            || status == reqwest::StatusCode::PARTIAL_CONTENT
+            || status.is_redirection()
+        {
+            return UrlProbe::Ok;
+        }
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return if token.filter(|t| !t.is_empty()).is_some() {
+                UrlProbe::Fail
+            } else {
+                UrlProbe::NeedsAuth
+            };
+        }
+    }
+
+    let head = auth(client.head(url));
+    if let Ok(resp) = head.send().await {
+        let status = resp.status();
+        if status.is_success() || status.is_redirection() {
+            return UrlProbe::Ok;
+        }
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return if token.filter(|t| !t.is_empty()).is_some() {
+                UrlProbe::Fail
+            } else {
+                UrlProbe::NeedsAuth
+            };
+        }
+    }
+    UrlProbe::Fail
+}
+
+fn hf_resolved(file_name: &str, url: String, label: &str, size_kb: Option<f64>) -> ResolvedModelFile {
+    ResolvedModelFile {
+        model_id: None,
+        model_version_id: 0,
+        model_name: label.to_string(),
+        version_name: "huggingface".into(),
+        file_name: sanitize_filename(basename_only(file_name)),
+        size_kb,
+        download_url: url,
+        air: None,
+    }
+}
+
+fn tree_entry_matches_file(path: &str, want: &str) -> bool {
+    let leaf = path.rsplit('/').next().unwrap_or(path);
+    names_equivalent(leaf, want)
+}
+
+async fn try_known_hf_mirrors(
+    file_name: &str,
+    hf_token: Option<&str>,
+) -> Option<ResolvedModelFile> {
+    let want = basename_only(file_name);
+    let token = hf_token.filter(|t| !t.is_empty());
+    let mut needs_auth: Option<(String, String)> = None;
+
+    for (url, label) in known_mirror_candidates(want) {
+        match probe_download_url(&url, token).await {
+            UrlProbe::Ok => return Some(hf_resolved(want, url, &label, None)),
+            UrlProbe::NeedsAuth => {
+                if needs_auth.is_none() {
+                    needs_auth = Some((url, label));
+                }
+            }
+            UrlProbe::Fail => {}
+        }
+    }
+
+    needs_auth.map(|(url, label)| hf_resolved(want, url, &label, None))
+}
+
+/// Search Hugging Face Hub for a file by name (fallback when Civitai has nothing).
+async fn search_huggingface_hub(
+    file_name: &str,
+    hf_token: Option<&str>,
+    kind: Option<&str>,
+) -> AppResult<ResolvedModelFile> {
+    let want = basename_only(file_name);
+    let token = hf_token.filter(|t| !t.is_empty());
+
+    let queries = search_query_variants(want, kind);
+    let query_limit = if kind == Some("upscale") { 6 } else { 4 };
+    let mut last_error = format!("No Hugging Face mirror found for \"{want}\"");
+
+    for query in queries.iter().take(query_limit) {
+        let search_url = format!(
+            "https://huggingface.co/api/models?limit=8&search={}",
+            urlencoding_encode(query)
+        );
+        let search = match get_json(&search_url, token).await {
+            Ok(v) => v,
+            Err(e) => {
+                last_error = e.to_string();
+                continue;
+            }
+        };
+
+        let repos: Vec<String> = if let Some(arr) = search.as_array() {
+            arr.iter()
+                .filter_map(|m| {
+                    m.get("id")
+                        .or_else(|| m.get("modelId"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        if repos.is_empty() {
+            last_error = format!("No Hugging Face repos for \"{query}\"");
+            continue;
+        }
+
+        for repo in repos.iter().take(6) {
+            let tree_url = format!(
+                "https://huggingface.co/api/models/{}/tree/main?recursive=1",
+                repo
+            );
+            let tree = match get_json(&tree_url, token).await {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let Some(entries) = tree.as_array() else {
+                continue;
+            };
+
+            let mut fuzzy_hit: Option<(String, Option<f64>)> = None;
+            for entry in entries {
+                let path = match entry.get("path").and_then(|v| v.as_str()) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let is_file = entry
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .map(|t| t == "file")
+                    .unwrap_or(true);
+                if !is_file || !tree_entry_matches_file(path, want) {
+                    continue;
+                }
+                let size_kb = entry
+                    .get("size")
+                    .and_then(|v| v.as_u64())
+                    .map(|b| b as f64 / 1024.0);
+                let encoded_path = path
+                    .split('/')
+                    .map(urlencoding_encode)
+                    .collect::<Vec<_>>()
+                    .join("/");
+                let url = format!("https://huggingface.co/{repo}/resolve/main/{encoded_path}");
+                let leaf = path.rsplit('/').next().unwrap_or(path);
+                if leaf.eq_ignore_ascii_case(want) {
+                    match probe_download_url(&url, token).await {
+                        UrlProbe::Ok | UrlProbe::NeedsAuth => {
+                            return Ok(hf_resolved(want, url, repo, size_kb));
+                        }
+                        UrlProbe::Fail => {}
+                    }
+                } else if fuzzy_hit.is_none() {
+                    fuzzy_hit = Some((url, size_kb));
+                }
+            }
+            if let Some((url, size_kb)) = fuzzy_hit {
+                match probe_download_url(&url, token).await {
+                    UrlProbe::Ok | UrlProbe::NeedsAuth => {
+                        return Ok(hf_resolved(want, url, repo, size_kb));
+                    }
+                    UrlProbe::Fail => {}
+                }
+            }
+        }
+    }
+
+    Err(AppError::Message(last_error))
+}
+
+fn search_query_variants(name: &str, kind: Option<&str>) -> Vec<String> {
+    let base = basename_only(name);
+    let stem = Path::new(base)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(base);
+    let mut out = Vec::new();
+    let mut push = |s: String| {
+        let t = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        if t.len() >= 3 && !out.iter().any(|x: &String| x.eq_ignore_ascii_case(&t)) {
+            out.push(t);
+        }
+    };
+
+    push(stem.to_string());
+
+    // Drop _epoch_N / -epoch-N for search
+    let mut no_epoch = stem.to_string();
+    if let Some(i) = no_epoch.to_lowercase().rfind("epoch") {
+        no_epoch.truncate(i);
+        no_epoch = no_epoch.trim_end_matches(['_', '-', '.']).to_string();
+        push(no_epoch.clone());
+    }
+
+    push(stem.replace('_', " "));
+    push(stem.replace(['_', '-', '.'], " "));
+
+    // wan_2.1_vae → wan21 vae
+    let glued = stem
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || c.is_ascii_whitespace())
+        .collect::<String>();
+    push(glued);
+
+    // First meaningful tokens (helps "KR2 Tiger Kittens Calliope…")
+    let spaced = stem.replace(['_', '-'], " ");
+    let tokens: Vec<&str> = spaced.split_whitespace().collect();
+    if tokens.len() >= 3 {
+        push(tokens[..3].join(" "));
+        push(tokens[..tokens.len().min(4)].join(" "));
+    }
+
+    if kind == Some("upscale") {
+        push(format!("{stem} upscale"));
+        push(format!("{stem} esrgan"));
+        // Strip leading scale prefix for broader hits: 4x-UltraSharp → UltraSharp
+        let no_scale = stem
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .trim_start_matches(['x', 'X', '-', '_']);
+        if no_scale.len() >= 3 && !no_scale.eq_ignore_ascii_case(stem) {
+            push(no_scale.to_string());
+            push(format!("{no_scale} upscale"));
+        }
+    }
+
+    out
 }
 
 async fn get_json(
@@ -272,7 +836,10 @@ async fn get_json(
     Ok(serde_json::from_str(&body)?)
 }
 
-fn resolve_from_version_json(version: &serde_json::Value) -> AppResult<ResolvedModelFile> {
+fn resolve_from_version_json(
+    version: &serde_json::Value,
+    preferred_file_name: Option<&str>,
+) -> AppResult<ResolvedModelFile> {
     let model_version_id = version
         .get("id")
         .and_then(|v| v.as_i64())
@@ -299,21 +866,35 @@ fn resolve_from_version_json(version: &serde_json::Value) -> AppResult<ResolvedM
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    let file = pick_primary_file(&files)
-        .ok_or_else(|| AppError::Message("No downloadable files on this version".into()))?;
+    let file = pick_file_for_version(&files, preferred_file_name).ok_or_else(|| {
+        AppError::Message("No downloadable files on this version".into())
+    })?;
 
     let download_url = file
         .get("downloadUrl")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
+        .or_else(|| version.get("downloadUrl").and_then(|v| v.as_str()))
         .ok_or_else(|| AppError::Message("File has no downloadUrl".into()))?
         .to_string();
 
-    let file_name = file
+    // Prefer workflow/Comfy filename so the file is findable by the graph.
+    let civitai_name = file
         .get("name")
         .and_then(|v| v.as_str())
         .map(sanitize_filename)
         .unwrap_or_else(|| format!("model-version-{model_version_id}.safetensors"));
+
+    let file_name = preferred_file_name
+        .map(basename_only)
+        .filter(|s| !s.trim().is_empty())
+        .map(sanitize_filename)
+        .filter(|s| {
+            // Keep preferred only when it looks like a real model file, or
+            // stems match the Civitai file (avoid saving as "version-123").
+            has_model_extension(s) || names_equivalent(s, &civitai_name)
+        })
+        .unwrap_or(civitai_name);
 
     let size_kb = file.get("sizeKB").and_then(|v| v.as_f64());
     let air = version
@@ -333,46 +914,118 @@ fn resolve_from_version_json(version: &serde_json::Value) -> AppResult<ResolvedM
     })
 }
 
+fn has_model_extension(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "safetensors" | "ckpt" | "pt" | "bin" | "pth"
+            )
+        })
+}
+
+fn inject_model_into_version(
+    version: &serde_json::Value,
+    model_id: i64,
+    model: &serde_json::Value,
+) -> serde_json::Value {
+    let mut version = version.clone();
+    if let Some(obj) = version.as_object_mut() {
+        if !obj.contains_key("model") {
+            obj.insert(
+                "model".into(),
+                serde_json::json!({
+                    "id": model_id,
+                    "name": model.get("name").cloned().unwrap_or(serde_json::Value::Null),
+                }),
+            );
+        }
+        if !obj.contains_key("modelId") {
+            obj.insert("modelId".into(), serde_json::json!(model_id));
+        }
+    }
+    version
+}
+
 pub async fn resolve_model_file(params: ResolveModelParams) -> AppResult<ResolvedModelFile> {
     let token = params.api_token.as_deref();
+    let hf_token = params.hf_token.as_deref();
+    let preferred = params
+        .preferred_file_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            params
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && has_model_extension(s))
+        });
+    let preferred_owned = preferred.map(|s| s.to_string());
+    let preferred_ref = preferred_owned.as_deref();
 
+    // 1) Exact version id (from civitaiResources) — always preferred
     if let Some(version_id) = params.model_version_id {
         let url = format!("https://civitai.com/api/v1/model-versions/{version_id}");
         let version = get_json(&url, token).await?;
-        return resolve_from_version_json(&version);
+        return resolve_from_version_json(&version, preferred_ref);
     }
 
+    // 2) Hash lookup — uniquely identifies the exact file/version
+    if let Some(hash) = params
+        .hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let url = format!(
+            "https://civitai.com/api/v1/model-versions/by-hash/{}",
+            urlencoding_encode(hash)
+        );
+        let version = get_json(&url, token).await?;
+        return resolve_from_version_json(&version, preferred_ref);
+    }
+
+    // 3) Model id — pick the version that owns the workflow filename, not newest
     if let Some(model_id) = params.model_id {
         let url = format!("https://civitai.com/api/v1/models/{model_id}");
         let model = get_json(&url, token).await?;
-        let versions = model
-            .get("modelVersions")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let version = versions
-            .first()
-            .ok_or_else(|| AppError::Message("Model has no versions".into()))?;
-        // API nest may omit model object — inject name/id
-        let mut version = version.clone();
-        if let Some(obj) = version.as_object_mut() {
-            if !obj.contains_key("model") {
-                obj.insert(
-                    "model".into(),
-                    serde_json::json!({
-                        "id": model_id,
-                        "name": model.get("name").cloned().unwrap_or(serde_json::Value::Null),
-                    }),
-                );
-            }
-            if !obj.contains_key("modelId") {
-                obj.insert("modelId".into(), serde_json::json!(model_id));
+        let preferred_for_model = preferred_ref.unwrap_or("");
+        let version = if !preferred_for_model.is_empty() {
+            find_best_version_for_preferred(&model, preferred_for_model)
+        } else {
+            let versions = model
+                .get("modelVersions")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if versions.len() == 1 {
+                versions.into_iter().next()
+            } else {
+                None
             }
         }
-        return resolve_from_version_json(&version);
+        .ok_or_else(|| {
+            if preferred_ref.is_some() {
+                AppError::Message(format!(
+                    "No version of this model matches \"{}\"",
+                    basename_only(preferred_ref.unwrap_or(""))
+                ))
+            } else {
+                AppError::Message(
+                    "Multiple versions exist — need a filename or modelVersionId to pick the exact one"
+                        .into(),
+                )
+            }
+        })?;
+
+        let version = inject_model_into_version(&version, model_id, &model);
+        return resolve_from_version_json(&version, preferred_ref);
     }
 
-    // Search by name when IDs are missing (Comfy filename-only resources)
     let name = params
         .name
         .as_deref()
@@ -380,47 +1033,93 @@ pub async fn resolve_model_file(params: ResolveModelParams) -> AppResult<Resolve
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             AppError::Message(
-                "Need modelVersionId, modelId, or a name to resolve download".into(),
+                "Need modelVersionId, hash, modelId, or a name to resolve download".into(),
             )
         })?;
 
-    // Strip extension for search
-    let query = Path::new(name)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(name);
+    let match_name = preferred_ref.unwrap_or(name);
+    let kind = params.kind.as_deref();
 
-    let mut url = format!(
-        "https://civitai.com/api/v1/models?limit=5&query={}",
-        urlencoding_encode(query)
-    );
-    if let Some(kind) = params.kind.as_deref().and_then(map_kind_to_civitai_type) {
-        url.push_str(&format!("&types={kind}"));
+    // 4) Known HF mirrors (official Comfy packs / popular upscalers)
+    if let Some(resolved) = try_known_hf_mirrors(match_name, hf_token).await {
+        return Ok(resolved);
     }
 
-    let search = get_json(&url, token).await?;
-    let items = search
-        .get("items")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let model = items.first().ok_or_else(|| {
-        AppError::Message(format!("No Civitai model found for \"{query}\""))
-    })?;
-    let model_id = model
-        .get("id")
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| AppError::Message("Search result missing model id".into()))?;
+    // Upscalers often live only on HF — try hub search before a long Civitai crawl
+    if kind == Some("upscale") {
+        if let Ok(resolved) = search_huggingface_hub(match_name, hf_token, kind).await {
+            return Ok(resolved);
+        }
+    }
 
-    // Recurse with model id
-    Box::pin(resolve_model_file(ResolveModelParams {
-        model_version_id: None,
-        model_id: Some(model_id),
-        name: None,
-        kind: params.kind,
-        api_token: params.api_token,
-    }))
-    .await
+    // 5) Search Civitai with multiple query shapes + fuzzy file/name matching
+    let queries = search_query_variants(name, kind);
+    let kind_type = kind.and_then(map_kind_to_civitai_type);
+    let mut last_error = format!("No Civitai model found for \"{name}\"");
+
+    for query in queries.iter() {
+        // Try with type filter first, then without (many VAEs/upscalers aren't typed)
+        let type_passes: &[Option<&str>] = match kind_type {
+            Some(t) => &[Some(t), None],
+            None => &[None],
+        };
+
+        for typed in type_passes {
+            let mut url = format!(
+                "https://civitai.com/api/v1/models?limit=10&query={}",
+                urlencoding_encode(query)
+            );
+            if let Some(kind) = typed {
+                url.push_str(&format!("&types={kind}"));
+            }
+
+            let search = match get_json(&url, token).await {
+                Ok(v) => v,
+                Err(e) => {
+                    last_error = e.to_string();
+                    continue;
+                }
+            };
+            let items = search
+                .get("items")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if items.is_empty() {
+                last_error = format!("No Civitai model found for \"{query}\"");
+                continue;
+            }
+
+            for model in &items {
+                let model_id = match model.get("id").and_then(|v| v.as_i64()) {
+                    Some(id) => id,
+                    None => continue,
+                };
+                if let Some(version) = find_best_version_for_preferred(model, match_name) {
+                    let version = inject_model_into_version(&version, model_id, model);
+                    return resolve_from_version_json(&version, Some(match_name));
+                }
+            }
+
+            last_error = format!(
+                "Found models for \"{query}\" but none match \"{}\"",
+                basename_only(match_name)
+            );
+        }
+    }
+
+    // 6) Hugging Face Hub search fallback (skip if already tried for upscale)
+    if kind == Some("upscale") {
+        return Err(AppError::Message(format!(
+            "{last_error}. No Hugging Face mirror found either."
+        )));
+    }
+    match search_huggingface_hub(match_name, hf_token, kind).await {
+        Ok(resolved) => Ok(resolved),
+        Err(hf_err) => Err(AppError::Message(format!(
+            "{last_error}. Hugging Face: {hf_err}"
+        ))),
+    }
 }
 
 fn urlencoding_encode(s: &str) -> String {
@@ -539,7 +1238,11 @@ async fn download_inner(
 
     let client = download_client();
     let mut request = client.get(&params.url);
-    if let Some(token) = params.api_token.as_deref().filter(|t| !t.is_empty()) {
+    if let Some(token) = bearer_for_url(
+        &params.url,
+        params.api_token.as_deref(),
+        params.hf_token.as_deref(),
+    ) {
         request = request.bearer_auth(token);
     }
     if existing > 0 {
@@ -579,7 +1282,7 @@ async fn download_inner(
         (0u64, false)
     } else {
         let body = response.text().await.unwrap_or_default();
-        let message = friendly_http_error(status, &body);
+        let message = friendly_http_error(status, &body, &params.url);
         emit_progress(
             app,
             DownloadProgressEvent {

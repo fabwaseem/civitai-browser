@@ -1,6 +1,8 @@
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ExternalLink } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -35,6 +37,7 @@ export function SettingsDialog() {
 
   const {
     apiToken,
+    hfToken,
     downloadDir,
     comfyModelsDir,
     maxConcurrentDownloads,
@@ -43,6 +46,7 @@ export function SettingsDialog() {
     blurNsfw,
     blurNsfwFrom,
     setApiToken,
+    setHfToken,
     setDownloadDir,
     setComfyModelsDir,
     setMaxConcurrentDownloads,
@@ -53,14 +57,18 @@ export function SettingsDialog() {
   } = useSettingsStore();
 
   const [tokenDraft, setTokenDraft] = useState(apiToken);
+  const [hfTokenDraft, setHfTokenDraft] = useState(hfToken);
   const [version, setVersion] = useState("…");
   const [clearingCache, setClearingCache] = useState(false);
   const [modelsHint, setModelsHint] = useState<string | null>(null);
   const modelsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (isOpen) setTokenDraft(apiToken);
-  }, [apiToken, isOpen]);
+    if (isOpen) {
+      setTokenDraft(apiToken);
+      setHfTokenDraft(hfToken);
+    }
+  }, [apiToken, hfToken, isOpen]);
 
   useEffect(() => {
     void getVersion().then(setVersion).catch(() => setVersion("0.1.0"));
@@ -167,22 +175,72 @@ export function SettingsDialog() {
         <div className="space-y-5">
           <Section title="Account">
             <Field label="Civitai API token">
-              <Input
-                id="token"
-                type="password"
-                value={tokenDraft}
-                onChange={(e) => setTokenDraft(e.target.value)}
-                onBlur={() => {
-                  const next = tokenDraft.trim();
-                  if (next === apiToken) return;
-                  void setApiToken(next).then(() =>
-                    notify.success(
-                      next ? "API token saved" : "API token cleared",
-                    ),
-                  );
-                }}
-                placeholder="Optional"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="token"
+                  type="password"
+                  value={tokenDraft}
+                  onChange={(e) => setTokenDraft(e.target.value)}
+                  onBlur={() => {
+                    const next = tokenDraft.trim();
+                    if (next === apiToken) return;
+                    void setApiToken(next).then(() =>
+                      notify.success(
+                        next ? "Civitai token saved" : "Civitai token cleared",
+                      ),
+                    );
+                  }}
+                  placeholder="Optional"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="shrink-0 gap-1.5"
+                  onClick={() =>
+                    void openUrl("https://civitai.com/user/account")
+                  }
+                >
+                  Get key
+                  <ExternalLink className="size-3.5 opacity-70" />
+                </Button>
+              </div>
+            </Field>
+            <Field label="Hugging Face token">
+              <div className="flex gap-2">
+                <Input
+                  id="hf-token"
+                  type="password"
+                  value={hfTokenDraft}
+                  onChange={(e) => setHfTokenDraft(e.target.value)}
+                  onBlur={() => {
+                    const next = hfTokenDraft.trim();
+                    if (next === hfToken) return;
+                    void setHfToken(next).then(() =>
+                      notify.success(
+                        next
+                          ? "Hugging Face token saved"
+                          : "Hugging Face token cleared",
+                      ),
+                    );
+                  }}
+                  placeholder="Optional"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="shrink-0 gap-1.5"
+                  onClick={() =>
+                    void openUrl("https://huggingface.co/settings/tokens")
+                  }
+                >
+                  Get token
+                  <ExternalLink className="size-3.5 opacity-70" />
+                </Button>
+              </div>
             </Field>
           </Section>
 

@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
+  Check,
   Copy,
   Download,
   ExternalLink,
@@ -21,7 +22,7 @@ import {
   type UsedResource,
 } from "@/api/classifier";
 import { comfyExportArgs } from "@/api/comfyExport";
-import { saveImage, writeTextFile } from "@/api/tauri";
+import { findLocalModel, saveImage, writeTextFile } from "@/api/tauri";
 import type { CivitaiImage } from "@/api/types";
 import { shouldBlurNsfw } from "@/lib/nsfw";
 import { useSettingsStore } from "@/stores/settings";
@@ -63,8 +64,11 @@ export function DetailPanel({
   const workflow = extractWorkflowJson(current.meta);
   const resources = extractUsedResources(current.meta);
   const checkpoints = resources.filter((r) => r.kind === "checkpoint");
+  const diffusionModels = resources.filter((r) => r.kind === "diffusion");
+  const clips = resources.filter((r) => r.kind === "clip");
   const loras = resources.filter((r) => r.kind === "lora");
   const vaes = resources.filter((r) => r.kind === "vae");
+  const upscales = resources.filter((r) => r.kind === "upscale");
   const embeddings = resources.filter((r) => r.kind === "embedding");
   const otherResources = resources.filter((r) => r.kind === "other");
   const previewSrc = galleryImageUrl(current, 640);
@@ -236,8 +240,20 @@ export function DetailPanel({
         </div>
 
         {checkpoints.length > 0 && (
-          <Section title="Models">
+          <Section title="Checkpoints">
             <ResourceList items={checkpoints} />
+          </Section>
+        )}
+
+        {diffusionModels.length > 0 && (
+          <Section title="Diffusion models">
+            <ResourceList items={diffusionModels} />
+          </Section>
+        )}
+
+        {clips.length > 0 && (
+          <Section title="Text encoders">
+            <ResourceList items={clips} />
           </Section>
         )}
 
@@ -250,6 +266,12 @@ export function DetailPanel({
         {vaes.length > 0 && (
           <Section title="VAEs">
             <ResourceList items={vaes} />
+          </Section>
+        )}
+
+        {upscales.length > 0 && (
+          <Section title="Upscale models">
+            <ResourceList items={upscales} />
           </Section>
         )}
 
@@ -344,10 +366,56 @@ function formatWeight(weight: number) {
 function ResourceList({ items }: { items: UsedResource[] }) {
   const enqueueResource = useDownloadStore((s) => s.enqueueResource);
   const jobs = useDownloadStore((s) => s.jobs);
+  const comfyModelsDir = useSettingsStore((s) => s.comfyModelsDir);
+  const completedPulse = useDownloadStore(
+    (s) => s.jobs.filter((j) => j.status === "completed").length,
+  );
+  const [installed, setInstalled] = useState<
+    Record<string, { relative: string | null }>
+  >({});
+
+  const itemsKey = items.map((i) => `${i.kind}|${i.name}`).join("\0");
+
+  useEffect(() => {
+    if (!comfyModelsDir || items.length === 0) {
+      setInstalled({});
+      return;
+    }
+    let cancelled = false;
+    const snapshot = items;
+    void (async () => {
+      const next: Record<string, { relative: string | null }> = {};
+      await Promise.all(
+        snapshot.map(async (item) => {
+          const key = `${item.kind}|${item.name}`;
+          try {
+            const result = await findLocalModel({
+              root: comfyModelsDir,
+              fileName: item.name,
+              kind: item.kind,
+            });
+            if (result.found) {
+              next[key] = { relative: result.relative };
+            }
+          } catch {
+            /* ignore lookup failures */
+          }
+        }),
+      );
+      if (!cancelled) setInstalled(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // itemsKey captures identity; completedPulse refreshes after downloads
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comfyModelsDir, itemsKey, completedPulse]);
 
   return (
     <ul className="space-y-1">
       {items.map((item) => {
+        const key = `${item.kind}|${item.name}`;
+        const local = installed[key];
         const active = jobs.find(
           (j) =>
             j.name === item.name &&
@@ -359,7 +427,7 @@ function ResourceList({ items }: { items: UsedResource[] }) {
         );
         return (
           <li
-            key={`${item.kind}-${item.name}-${item.version ?? ""}-${item.modelVersionId ?? ""}`}
+            key={`${item.kind}-${item.modelVersionId ?? ""}-${item.name}`}
             className="text-xs"
           >
             <div className="flex h-7 items-center gap-1">
@@ -396,39 +464,57 @@ function ResourceList({ items }: { items: UsedResource[] }) {
                   <ExternalLink className="h-3.5 w-3.5" />
                 </Button>
               )}
-              <Button
-                size="icon"
-                variant="ghost"
-                className="h-7 w-7 shrink-0"
-                title={
-                  active
-                    ? `Download ${active.status}`
-                    : "Download model file"
-                }
-                disabled={
-                  !!active &&
-                  (active.status === "downloading" ||
-                    active.status === "resolving" ||
-                    active.status === "queued")
-                }
-                onClick={(e) => {
-                  void enqueueResource(item, {
-                    x: e.clientX,
-                    y: e.clientY,
-                  });
-                }}
-              >
-                <Download
-                  className={cn(
-                    "h-3.5 w-3.5",
-                    active && "text-[var(--color-accent)]",
-                  )}
-                />
-              </Button>
+              {local ? (
+                <span
+                  className="grid h-7 w-7 shrink-0 place-items-center text-[var(--color-accent)]"
+                  title={
+                    local.relative
+                      ? `Installed · ${local.relative}`
+                      : "Already installed"
+                  }
+                >
+                  <Check className="h-3.5 w-3.5" strokeWidth={2.5} />
+                </span>
+              ) : (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7 shrink-0"
+                  title={
+                    active
+                      ? `Download ${active.status}`
+                      : "Download model file"
+                  }
+                  disabled={
+                    !!active &&
+                    (active.status === "downloading" ||
+                      active.status === "resolving" ||
+                      active.status === "queued")
+                  }
+                  onClick={(e) => {
+                    void enqueueResource(item, {
+                      x: e.clientX,
+                      y: e.clientY,
+                    });
+                  }}
+                >
+                  <Download
+                    className={cn(
+                      "h-3.5 w-3.5",
+                      active && "text-[var(--color-accent)]",
+                    )}
+                  />
+                </Button>
+              )}
             </div>
             {item.version && (
               <p className="-mt-0.5 truncate text-[10px] text-[var(--color-muted)]">
                 {item.version}
+              </p>
+            )}
+            {local?.relative && (
+              <p className="-mt-0.5 truncate text-[10px] text-[var(--color-accent)]/80">
+                {local.relative}
               </p>
             )}
           </li>

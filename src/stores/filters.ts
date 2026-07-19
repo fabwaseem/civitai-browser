@@ -19,6 +19,8 @@ export interface FilterState {
   modelId: string;
   modelVersionId: string;
   baseModels: string;
+  /** Civitai image category tag IDs (comma-joined for API `tags`) */
+  tagIds: number[];
   workflowMode: WorkflowMode;
   hydrate: () => Promise<void>;
   setSort: (sort: SortOption) => void;
@@ -28,6 +30,8 @@ export interface FilterState {
   setModelId: (modelId: string) => void;
   setModelVersionId: (modelVersionId: string) => void;
   setBaseModels: (baseModels: string) => void;
+  setTagIds: (tagIds: number[]) => void;
+  toggleTagId: (tagId: number) => void;
   setWorkflowMode: (workflowMode: WorkflowMode) => void;
   reset: () => void;
 }
@@ -40,6 +44,7 @@ export const filterDefaults = {
   modelId: "",
   modelVersionId: "",
   baseModels: "",
+  tagIds: [] as number[],
   workflowMode: "workflow" as WorkflowMode,
 };
 
@@ -57,6 +62,7 @@ export function isFiltersDirty(
     | "modelId"
     | "modelVersionId"
     | "baseModels"
+    | "tagIds"
     | "workflowMode"
   >,
   defaultNsfw: NsfwOption = defaults.nsfw,
@@ -69,12 +75,23 @@ export function isFiltersDirty(
     state.modelId !== defaults.modelId ||
     state.modelVersionId !== defaults.modelVersionId ||
     state.baseModels !== defaults.baseModels ||
+    state.tagIds.length > 0 ||
     state.workflowMode !== defaults.workflowMode
   );
 }
 
 async function getStore() {
   return Store.load(STORE_FILE);
+}
+
+function normalizeTagIds(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  const out: number[] = [];
+  for (const v of raw) {
+    const n = typeof v === "number" ? v : Number(v);
+    if (Number.isFinite(n) && n > 0 && !out.includes(n)) out.push(n);
+  }
+  return out;
 }
 
 async function persistFilters(state: FilterState) {
@@ -86,6 +103,7 @@ async function persistFilters(state: FilterState) {
     modelId: state.modelId,
     modelVersionId: state.modelVersionId,
     baseModels: state.baseModels,
+    tagIds: state.tagIds,
     workflowMode: state.workflowMode,
   };
   const store = await getStore();
@@ -119,6 +137,7 @@ export const useFilterStore = create<FilterState>((set, get) => ({
         modelId: saved.modelId ?? defaults.modelId,
         modelVersionId: saved.modelVersionId ?? defaults.modelVersionId,
         baseModels: saved.baseModels ?? defaults.baseModels,
+        tagIds: normalizeTagIds(saved.tagIds),
         workflowMode: saved.workflowMode ?? defaults.workflowMode,
         hydrated: true,
       });
@@ -134,6 +153,14 @@ export const useFilterStore = create<FilterState>((set, get) => ({
   setModelVersionId: (modelVersionId) =>
     patchAndSave(set, get, { modelVersionId }),
   setBaseModels: (baseModels) => patchAndSave(set, get, { baseModels }),
+  setTagIds: (tagIds) => patchAndSave(set, get, { tagIds: normalizeTagIds(tagIds) }),
+  toggleTagId: (tagId) => {
+    const current = get().tagIds;
+    const next = current.includes(tagId)
+      ? current.filter((id) => id !== tagId)
+      : [...current, tagId];
+    patchAndSave(set, get, { tagIds: next });
+  },
   setWorkflowMode: (workflowMode) => patchAndSave(set, get, { workflowMode }),
   reset: () => {
     void (async () => {

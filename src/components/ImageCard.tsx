@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Eye, EyeOff, Heart, MessageCircle } from "lucide-react";
+import { useEffect, useRef, useState, type SyntheticEvent } from "react";
+import { Eye, EyeOff, Heart, Maximize2, MessageCircle } from "lucide-react";
 import { BlurPlaceholder } from "@/components/BlurPlaceholder";
 import { galleryImageUrl } from "@/api/classifier";
 import type { CivitaiImage } from "@/api/types";
@@ -20,6 +20,7 @@ interface ImageCardProps {
   width?: number;
   variant?: "masonry" | "grid";
   onSelect: (image: CivitaiImage) => void;
+  onOpenLightbox: (image: CivitaiImage) => void;
   onDragStart: (image: CivitaiImage) => void;
   onHover?: (image: CivitaiImage) => void;
 }
@@ -29,6 +30,7 @@ export function ImageCard({
   width,
   variant = "masonry",
   onSelect,
+  onOpenLightbox,
   onDragStart,
   onHover,
 }: ImageCardProps) {
@@ -61,6 +63,13 @@ export function ImageCard({
   function markLoaded() {
     loadedIds.add(data.id);
     setLoaded(true);
+  }
+
+  function openLightbox(e: SyntheticEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (blurred) reveal(data.id);
+    onOpenLightbox(data);
   }
 
   return (
@@ -133,25 +142,41 @@ export function ImageCard({
         </span>
       )}
 
-      {needsBlur && revealed && (
-        <span
-          role="button"
-          tabIndex={0}
-          title="Hide again"
-          className="absolute right-1 top-1 z-10 grid h-6 w-6 place-items-center rounded-sm bg-black/55 text-white/90 opacity-0 backdrop-blur-sm transition group-hover:opacity-100"
-          onClick={(e) => {
-            e.stopPropagation();
-            hide(data.id);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.stopPropagation();
-              hide(data.id);
-            }
-          }}
-        >
-          <EyeOff className="h-3.5 w-3.5" />
-        </span>
+      {!blurred && (
+        <div className="absolute right-1.5 top-1.5 z-20 flex items-center gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
+          {needsBlur && revealed && (
+            <span
+              role="button"
+              tabIndex={0}
+              title="Hide again"
+              className="grid h-7 w-7 place-items-center rounded-md bg-black/60 text-white/90 shadow-sm backdrop-blur-sm transition hover:bg-black/75 hover:text-white"
+              onClick={(e) => {
+                e.stopPropagation();
+                hide(data.id);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.stopPropagation();
+                  hide(data.id);
+                }
+              }}
+            >
+              <EyeOff className="h-3.5 w-3.5" />
+            </span>
+          )}
+          <span
+            role="button"
+            tabIndex={0}
+            title="Open lightbox"
+            className="grid h-7 w-7 place-items-center rounded-md bg-black/60 text-white/90 shadow-sm backdrop-blur-sm transition hover:bg-[var(--color-accent)] hover:text-[var(--color-accent-ink)]"
+            onClick={openLightbox}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") openLightbox(e);
+            }}
+          >
+            <Maximize2 className="h-3.5 w-3.5" strokeWidth={2.25} />
+          </span>
+        </div>
       )}
 
       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent p-1.5 pt-6 opacity-0 transition group-hover:opacity-100">

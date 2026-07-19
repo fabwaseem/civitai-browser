@@ -140,7 +140,15 @@ export function extractNegativePrompt(meta?: Record<string, unknown> | null) {
   return typeof value === "string" ? value : "";
 }
 
-export type UsedResourceKind = "checkpoint" | "lora" | "embedding" | "vae" | "other";
+export type UsedResourceKind =
+  | "checkpoint"
+  | "diffusion"
+  | "clip"
+  | "lora"
+  | "embedding"
+  | "vae"
+  | "upscale"
+  | "other";
 
 export interface UsedResource {
   kind: UsedResourceKind;
@@ -149,6 +157,8 @@ export interface UsedResource {
   weight?: number;
   modelId?: number;
   modelVersionId?: number;
+  /** Civitai file hash (AutoV2 / SHA256 / etc.) when present in meta */
+  hash?: string;
 }
 
 /**
@@ -185,8 +195,33 @@ export const KNOWN_VAES = [
   "hunyuanvideo_vae",
 ] as const;
 
+/** Common ComfyUI upscaler filenames (ESRGAN / RealESRGAN / etc.). */
+export const KNOWN_UPSCALERS = [
+  "4x-ultrasharp",
+  "4x_ultrasharp",
+  "4x-ultrasharp.pth",
+  "4x-animesharp",
+  "4x_animesharp",
+  "4x-ultramix_balanced",
+  "4x_foolhardy_remacri",
+  "4xfoolhardyremacri",
+  "realesrgan_x4plus",
+  "realesrgan_x4plus.pth",
+  "realesrgan_x4plus_anime_6b",
+  "realesrgan_x2plus",
+  "realesrnet_x4plus",
+  "esrgan_4x",
+  "4xnomos8kdat",
+  "4x_nomos8k_dat",
+  "4xlsdir",
+  "8x_nmkd-superscale_150000_g",
+  "8x_nmkd_superscale",
+  "2x_animesharpv2_fast",
+] as const;
+
 function normalizeResourceKey(name: string): string {
-  return name
+  const base = name.split(/[/\\]/).pop() ?? name;
+  return base
     .toLowerCase()
     .replace(/\.(safetensors|ckpt|pt|bin|pth)$/i, "")
     .replace(/[\s\-_.]+/g, "")
@@ -195,6 +230,10 @@ function normalizeResourceKey(name: string): string {
 
 const KNOWN_VAE_KEYS = new Set(
   KNOWN_VAES.map((n) => normalizeResourceKey(n)).filter(Boolean),
+);
+
+const KNOWN_UPSCALER_KEYS = new Set(
+  KNOWN_UPSCALERS.map((n) => normalizeResourceKey(n)).filter(Boolean),
 );
 
 /** True if filename looks like / is a known VAE. */
@@ -213,10 +252,44 @@ export function isVaeName(name: string): boolean {
   return false;
 }
 
+/** True if filename looks like an ESRGAN / RealESRGAN / Comfy upscaler. */
+export function isUpscaleName(name: string): boolean {
+  const lower = name.toLowerCase();
+  const key = normalizeResourceKey(name);
+  if (KNOWN_UPSCALER_KEYS.has(key)) return true;
+  if (/[/\\]upscale[_-]?models?[/\\]/i.test(lower)) return true;
+  if (
+    /\b(ultrasharp|animesharp|remacri|realesrgan|realesrnet|esrgan|nomos|nmkd|superscale|lsdir|swinir|hat[_-]?gan)\b/i.test(
+      lower,
+    )
+  ) {
+    return true;
+  }
+  // Typical OpenModelDB / ESRGAN naming: 4x-Foo, 2x_Bar, 8xNMKD…
+  if (/^(?:\d+x[-_]|x\d+[-_])/i.test(basenameOf(name))) return true;
+  return false;
+}
+
 function classifyResourceType(raw?: string | null): UsedResourceKind {
   const t = (raw ?? "").toLowerCase();
   if (!t) return "other";
-  if (t.includes("checkpoint") || t === "model" || t.includes("unet")) {
+  if (
+    t.includes("unet") ||
+    t.includes("diffusion") ||
+    t === "diffusion_model"
+  ) {
+    return "diffusion";
+  }
+  if (
+    t.includes("clip") ||
+    t.includes("textencoder") ||
+    t.includes("text_encoder") ||
+    t.includes("text-encoder") ||
+    t.includes("t5")
+  ) {
+    return "clip";
+  }
+  if (t.includes("checkpoint") || t === "model") {
     return "checkpoint";
   }
   if (t.includes("lora") || t.includes("lycoris") || t.includes("locon")) {
@@ -224,16 +297,24 @@ function classifyResourceType(raw?: string | null): UsedResourceKind {
   }
   if (t.includes("embed") || t.includes("textual")) return "embedding";
   if (t.includes("vae")) return "vae";
+  if (
+    t.includes("upscale") ||
+    t.includes("esrgan") ||
+    t.includes("realesrgan")
+  ) {
+    return "upscale";
+  }
   return "other";
 }
 
-/** Prefer explicit type, then filename heuristics (especially VAE). */
+/** Prefer explicit type, then filename heuristics (especially VAE / upscale). */
 function resolveResourceKind(
   typeHint: string | null | undefined,
   name: string,
 ): UsedResourceKind {
   const fromType = classifyResourceType(typeHint);
   if (fromType === "vae" || isVaeName(name)) return "vae";
+  if (fromType === "upscale" || isUpscaleName(name)) return "upscale";
   if (fromType !== "other") return fromType;
   const lower = name.toLowerCase();
   if (/\.(pt|bin)$/i.test(lower) && /embed|textual|ti[_-]/i.test(lower)) {
@@ -243,12 +324,94 @@ function resolveResourceKind(
   return "other";
 }
 
+/** Comfy loader node → folder kind (authoritative for download destination). */
+function kindFromComfyNode(classType: string): UsedResourceKind | null {
+  const t = classType.toLowerCase();
+  if (/unetloader|diffusionmodelloader|loaddiffusionmodel|unetloadergguf/i.test(t)) {
+    return "diffusion";
+  }
+  if (
+    /dualcliploader|triplecliploader|cliploader|cliptextencode|textencoderloader|t5/i.test(
+      t,
+    ) &&
+    /loader/i.test(t)
+  ) {
+    return "clip";
+  }
+  if (/checkpointloader/i.test(t)) return "checkpoint";
+  if (/lora/i.test(t) && /loader|loaderamodel/i.test(t)) return "lora";
+  if (/vaeloader/i.test(t)) return "vae";
+  if (
+    /upscalemodelloader|loadupscalemodel|imageupscalewithmodel|ultimatesdupscale|cr_?upscale/i.test(
+      t,
+    )
+  ) {
+    return "upscale";
+  }
+  return null;
+}
+
+/** When merging meta + Comfy, prefer folder-specific kinds from the graph. */
+function preferKind(a: UsedResourceKind, b: UsedResourceKind): UsedResourceKind {
+  if (a === b) return a;
+  if (a === "other") return b;
+  if (b === "other") return a;
+  if (a === "diffusion" || b === "diffusion") return "diffusion";
+  if (a === "clip" || b === "clip") return "clip";
+  if (a === "vae" || b === "vae") return "vae";
+  if (a === "upscale" || b === "upscale") return "upscale";
+  if (a === "lora" || b === "lora") return "lora";
+  if (a === "embedding" || b === "embedding") return "embedding";
+  return a;
+}
+
+function hasModelExtension(name: string): boolean {
+  return /\.(safetensors|ckpt|pt|bin|pth|gguf)$/i.test(name);
+}
+
+function basenameOf(name: string): string {
+  return name.split(/[/\\]/).pop()?.trim() || name.trim();
+}
+
+/** Prefer the Comfy-style filename (with extension) over a bare display name. */
+function preferResourceName(current: string, incoming: string): string {
+  const a = basenameOf(current);
+  const b = basenameOf(incoming);
+  if (hasModelExtension(b) && !hasModelExtension(a)) return b;
+  if (hasModelExtension(a) && !hasModelExtension(b)) return a;
+  // Prefer the longer basename when both look similar (path vs bare)
+  if (b.length > a.length) return b;
+  return a;
+}
+
+/** Checkpoint + diffusion are the same asset family (Civitai vs UNETLoader). */
+function dedupeFamily(kind: UsedResourceKind): string {
+  if (kind === "checkpoint" || kind === "diffusion") return "main";
+  return kind;
+}
+
+function mergeResource(into: UsedResource, from: UsedResource): UsedResource {
+  return {
+    kind: preferKind(into.kind, from.kind),
+    name: preferResourceName(into.name, from.name),
+    version: into.version ?? from.version,
+    weight: into.weight ?? from.weight,
+    modelId: into.modelId ?? from.modelId,
+    modelVersionId: into.modelVersionId ?? from.modelVersionId,
+    hash: into.hash ?? from.hash,
+  };
+}
+
 function pushUnique(list: UsedResource[], item: UsedResource) {
-  const key = `${item.kind}|${item.name}|${item.version ?? ""}|${item.modelVersionId ?? ""}`;
-  if (list.some((x) => `${x.kind}|${x.name}|${x.version ?? ""}|${x.modelVersionId ?? ""}` === key)) {
+  const key = `${dedupeFamily(item.kind)}|${normalizeResourceKey(item.name)}`;
+  const idx = list.findIndex(
+    (x) => `${dedupeFamily(x.kind)}|${normalizeResourceKey(x.name)}` === key,
+  );
+  if (idx >= 0) {
+    list[idx] = mergeResource(list[idx], item);
     return;
   }
-  list.push(item);
+  list.push({ ...item, name: basenameOf(item.name) });
 }
 
 /** Some Comfy custom nodes store LoRAs as a JSON array/object string. */
@@ -316,8 +479,14 @@ function resourcesFromCivitaiMeta(meta: Record<string, unknown>): UsedResource[]
         (typeof entry.modelName === "string" && entry.modelName) ||
         (typeof entry.name === "string" && entry.name) ||
         (typeof entry.model === "string" && entry.model) ||
+        (typeof entry.fileName === "string" && entry.fileName) ||
         "";
-      if (!name) continue;
+      const modelVersionId =
+        typeof entry.modelVersionId === "number"
+          ? entry.modelVersionId
+          : undefined;
+      // Some entries are ID-only (`{ type, modelVersionId }`) — still useful
+      if (!name && modelVersionId == null) continue;
       const version =
         typeof entry.modelVersionName === "string"
           ? entry.modelVersionName
@@ -332,21 +501,58 @@ function resourcesFromCivitaiMeta(meta: Record<string, unknown>): UsedResource[]
             : undefined;
       const modelId =
         typeof entry.modelId === "number" ? entry.modelId : undefined;
-      const modelVersionId =
-        typeof entry.modelVersionId === "number"
-          ? entry.modelVersionId
-          : undefined;
+      const hash =
+        (typeof entry.hash === "string" && entry.hash) ||
+        (typeof entry.SHA256 === "string" && entry.SHA256) ||
+        (typeof entry.AutoV2 === "string" && entry.AutoV2) ||
+        undefined;
+      const displayName =
+        name ||
+        (version ? `version-${modelVersionId} (${version})` : `version-${modelVersionId}`);
       pushUnique(out, {
         kind: resolveResourceKind(
           typeof entry.type === "string" ? entry.type : null,
-          name,
+          displayName,
         ),
-        name,
+        name: displayName,
         version,
         weight,
         modelId,
         modelVersionId,
+        hash,
       });
+    }
+  }
+
+  // A1111-style hashes: { "model": "ABC…", "lora:name": "DEF…" }
+  const hashes = meta.hashes;
+  if (isPlainObject(hashes)) {
+    for (const [key, value] of Object.entries(hashes)) {
+      if (typeof value !== "string" || !value.trim()) continue;
+      const hash = value.trim();
+      if (/^model$/i.test(key) || /^checkpoint:/i.test(key)) {
+        const existing = out.find((r) => r.kind === "checkpoint" && !r.hash);
+        if (existing) existing.hash = hash;
+        else if (!out.some((r) => r.kind === "checkpoint")) {
+          pushUnique(out, {
+            kind: "checkpoint",
+            name: typeof meta.Model === "string" ? meta.Model : "checkpoint",
+            hash,
+          });
+        }
+        continue;
+      }
+      const loraMatch = key.match(/^lora:(.+)$/i);
+      if (loraMatch) {
+        const loraName = loraMatch[1];
+        const existing = out.find(
+          (r) =>
+            r.kind === "lora" &&
+            normalizeResourceKey(r.name) === normalizeResourceKey(loraName),
+        );
+        if (existing) existing.hash = existing.hash ?? hash;
+        else pushUnique(out, { kind: "lora", name: loraName, hash });
+      }
     }
   }
 
@@ -369,17 +575,40 @@ function resourcesFromComfyPrompt(prompt: Record<string, unknown>): UsedResource
       typeof node.class_type === "string" ? node.class_type : "";
     const inputs = isPlainObject(node.inputs) ? node.inputs : {};
 
-    if (/checkpoint|unetloader/i.test(classType)) {
+    if (/checkpoint|unetloader|diffusionmodel/i.test(classType)) {
       const name =
         (typeof inputs.ckpt_name === "string" && inputs.ckpt_name) ||
         (typeof inputs.unet_name === "string" && inputs.unet_name) ||
         (typeof inputs.model_name === "string" && inputs.model_name) ||
         "";
       if (name) {
+        const fromNode = kindFromComfyNode(classType);
         pushUnique(out, {
-          kind: resolveResourceKind("checkpoint", name),
+          kind: fromNode ?? resolveResourceKind("checkpoint", name),
           name,
         });
+      }
+    }
+
+    if (/cliploader|textencoderloader|dualcliploader|triplecliploader/i.test(classType)) {
+      const name =
+        (typeof inputs.clip_name === "string" && inputs.clip_name) ||
+        (typeof inputs.clip_name1 === "string" && inputs.clip_name1) ||
+        (typeof inputs.text_encoder === "string" && inputs.text_encoder) ||
+        (typeof inputs.ckpt_name === "string" && inputs.ckpt_name) ||
+        "";
+      if (name) {
+        pushUnique(out, {
+          kind: kindFromComfyNode(classType) ?? "clip",
+          name,
+        });
+      }
+      const name2 =
+        (typeof inputs.clip_name2 === "string" && inputs.clip_name2) ||
+        (typeof inputs.clip_name3 === "string" && inputs.clip_name3) ||
+        "";
+      if (name2) {
+        pushUnique(out, { kind: "clip", name: name2 });
       }
     }
 
@@ -410,6 +639,24 @@ function resourcesFromComfyPrompt(prompt: Record<string, unknown>): UsedResource
       });
     }
 
+    if (
+      /upscale|esrgan/i.test(classType) &&
+      !/latentupscale|imagescale|upscalelatent/i.test(classType)
+    ) {
+      const name =
+        (typeof inputs.model_name === "string" && inputs.model_name) ||
+        (typeof inputs.upscale_model === "string" && inputs.upscale_model) ||
+        (typeof inputs.model === "string" && inputs.model) ||
+        (typeof inputs.ckpt_name === "string" && inputs.ckpt_name) ||
+        "";
+      if (name && (hasModelExtension(name) || isUpscaleName(name))) {
+        pushUnique(out, {
+          kind: kindFromComfyNode(classType) ?? "upscale",
+          name,
+        });
+      }
+    }
+
     if (/embedding|textual/i.test(classType)) {
       const name =
         (typeof inputs.embedding_name === "string" && inputs.embedding_name) ||
@@ -437,9 +684,18 @@ function resourcesFromComfyWorkflow(workflow: Record<string, unknown>): UsedReso
       | string
       | undefined;
 
-    if (/checkpoint|unetloader/i.test(type) && firstStr) {
-      for (const item of expandNamedResources(firstStr, "checkpoint")) {
-        pushUnique(out, item);
+    if (/checkpoint|unetloader|diffusionmodel/i.test(type) && firstStr) {
+      const fromNode = kindFromComfyNode(type) ?? "checkpoint";
+      for (const item of expandNamedResources(firstStr, fromNode)) {
+        pushUnique(out, { ...item, kind: fromNode });
+      }
+    } else if (
+      /cliploader|textencoderloader|dualcliploader|triplecliploader/i.test(type)
+    ) {
+      for (const w of widgets) {
+        if (typeof w === "string" && w.trim() && hasModelExtension(w)) {
+          pushUnique(out, { kind: "clip", name: w.trim() });
+        }
       }
     } else if (/lora/i.test(type) && firstStr) {
       const strength = widgets.find((w) => typeof w === "number") as
@@ -451,6 +707,19 @@ function resourcesFromComfyWorkflow(workflow: Record<string, unknown>): UsedReso
     } else if (/vae/i.test(type) && firstStr) {
       for (const item of expandNamedResources(firstStr, "vae")) {
         pushUnique(out, item);
+      }
+    } else if (
+      /upscale|esrgan/i.test(type) &&
+      !/latentupscale|imagescale|upscalelatent/i.test(type)
+    ) {
+      for (const w of widgets) {
+        if (typeof w !== "string" || !w.trim()) continue;
+        if (hasModelExtension(w) || isUpscaleName(w)) {
+          pushUnique(out, {
+            kind: kindFromComfyNode(type) ?? "upscale",
+            name: w.trim(),
+          });
+        }
       }
     }
   }
@@ -491,8 +760,11 @@ export function extractUsedResources(
   // Prefer named kinds first in UI
   const order: UsedResourceKind[] = [
     "checkpoint",
+    "diffusion",
+    "clip",
     "lora",
     "vae",
+    "upscale",
     "embedding",
     "other",
   ];
@@ -582,6 +854,21 @@ export function previewImageUrl(image: CivitaiImage, width = 120) {
 /** Gallery/grid display URL — never originals; optimized thumbs only. */
 export function galleryImageUrl(image: CivitaiImage, width = 320) {
   const w = Math.min(Math.max(Math.round(width), 200), 450);
+  try {
+    return withCdnTransform(image.url, `width=${w},optimized=true`);
+  } catch {
+    return image.url;
+  }
+}
+
+/**
+ * High-res CDN derivative for lightbox / fullscreen viewing.
+ * Falls back to the original when the requested width is near native size.
+ */
+export function lightboxImageUrl(image: CivitaiImage, width = 1920) {
+  const native = image.width > 0 ? image.width : width;
+  const w = Math.min(Math.max(Math.round(width), 200), 3840);
+  if (w >= native * 0.9) return originalImageUrl(image);
   try {
     return withCdnTransform(image.url, `width=${w},optimized=true`);
   } catch {

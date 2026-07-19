@@ -12,11 +12,8 @@ import {
   usePositioner,
   useResizeObserver,
 } from "masonic";
+import { Loader2 } from "lucide-react";
 import { ImageCard } from "@/components/ImageCard";
-import {
-  MASONRY_SKELETON_HEIGHTS,
-  SkeletonTile,
-} from "@/components/GallerySkeleton";
 import type { CivitaiImage } from "@/api/types";
 import type { ViewMode } from "@/stores/ui";
 
@@ -24,9 +21,7 @@ const GAP = 2;
 const MIN_COLUMN_WIDTH = 300;
 const MAX_COLUMNS = 5;
 
-type MasonryEntry =
-  | { type: "image"; id: number; image: CivitaiImage }
-  | { type: "skeleton"; id: string; height: number };
+type MasonryEntry = { id: number; image: CivitaiImage };
 
 interface GalleryProps {
   images: CivitaiImage[];
@@ -36,8 +31,30 @@ interface GalleryProps {
   isFetchingNextPage: boolean;
   onLoadMore: () => void;
   onSelect: (image: CivitaiImage) => void;
+  onOpenLightbox: (image: CivitaiImage) => void;
   onDragStart: (image: CivitaiImage) => void;
   onHover: (image: CivitaiImage) => void;
+}
+
+/**
+ * Masonic caches cell positions by index and crashes if `items` shrinks
+ * without recreating the positioner. Bump a generation whenever the list
+ * gets shorter so we remount cleanly (filter refresh, fewer results, etc.).
+ */
+function useMasonryRemountKey(layoutKey: string, itemCount: number) {
+  const generationRef = useRef(0);
+  const prevLayoutKeyRef = useRef(layoutKey);
+  const prevCountRef = useRef(itemCount);
+
+  if (layoutKey !== prevLayoutKeyRef.current) {
+    generationRef.current = 0;
+    prevLayoutKeyRef.current = layoutKey;
+  } else if (itemCount < prevCountRef.current) {
+    generationRef.current += 1;
+  }
+  prevCountRef.current = itemCount;
+
+  return `${layoutKey}:${generationRef.current}`;
 }
 
 export function Gallery({
@@ -48,6 +65,7 @@ export function Gallery({
   isFetchingNextPage,
   onLoadMore,
   onSelect,
+  onOpenLightbox,
   onDragStart,
   onHover,
 }: GalleryProps) {
@@ -55,31 +73,18 @@ export function Gallery({
   const [scrollTop, setScrollTop] = useState(0);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
 
-  const { cols } = useMemo(
-    () => layoutColumns(viewport.width || 1200),
-    [viewport.width],
+  // Images only — never splice skeletons into masonic's items array.
+  // Removing skeletons used to shorten the list mid-flight and crash masonic.
+  const masonryItems = useMemo(
+    (): MasonryEntry[] =>
+      images.map((image) => ({
+        id: image.id,
+        image,
+      })),
+    [images],
   );
 
-  const masonryItems = useMemo((): MasonryEntry[] => {
-    const items: MasonryEntry[] = images.map((image) => ({
-      type: "image",
-      id: image.id,
-      image,
-    }));
-    if (isFetchingNextPage) {
-      // ~2 rows of placeholders — masonic packs them under shortest columns
-      const n = Math.max(cols * 2, 6);
-      for (let i = 0; i < n; i++) {
-        items.push({
-          type: "skeleton",
-          id: `skeleton-${layoutKey}-${i}`,
-          height:
-            MASONRY_SKELETON_HEIGHTS[i % MASONRY_SKELETON_HEIGHTS.length],
-        });
-      }
-    }
-    return items;
-  }, [images, isFetchingNextPage, cols, layoutKey]);
+  const masonryKey = useMasonryRemountKey(layoutKey, masonryItems.length);
 
   const maybeLoadMore = useInfiniteLoader(
     async () => {
@@ -100,26 +105,20 @@ export function Gallery({
       data: MasonryEntry;
       width: number;
     }) => {
-      if (data.type === "skeleton") {
-        return (
-          <SkeletonTile
-            className="w-full"
-            style={{ height: data.height, width: "100%" }}
-          />
-        );
-      }
+      if (!data?.image) return <div style={{ width, height: 1 }} />;
       return (
         <ImageCard
           data={data.image}
           width={width}
           variant="masonry"
           onSelect={onSelect}
+          onOpenLightbox={onOpenLightbox}
           onDragStart={onDragStart}
           onHover={onHover}
         />
       );
     },
-    [onDragStart, onHover, onSelect],
+    [onDragStart, onHover, onOpenLightbox, onSelect],
   );
 
   useEffect(() => {
@@ -169,7 +168,7 @@ export function Gallery({
     >
       {viewMode === "masonry" && viewport.width > 0 && (
         <MasonryGallery
-          key={layoutKey}
+          key={masonryKey}
           items={masonryItems}
           width={viewport.width}
           height={viewport.height}
@@ -189,16 +188,27 @@ export function Gallery({
               data={image}
               variant="grid"
               onSelect={onSelect}
+              onOpenLightbox={onOpenLightbox}
               onDragStart={onDragStart}
               onHover={onHover}
             />
           ))}
-          {isFetchingNextPage &&
-            Array.from({ length: cols }, (_, i) => (
-              <SkeletonTile key={`grid-sk-${i}`} className="aspect-square" />
-            ))}
         </div>
       )}
+      {isFetchingNextPage && <LoadMoreFooter />}
+    </div>
+  );
+}
+
+function LoadMoreFooter() {
+  return (
+    <div
+      className="flex items-center justify-center gap-2 py-6 text-sm text-[var(--color-muted)]"
+      role="status"
+      aria-live="polite"
+    >
+      <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" />
+      Loading more
     </div>
   );
 }
@@ -261,12 +271,7 @@ function MasonryGallery({
     scrollTop,
     overscanBy: 2,
     itemHeightEstimate: Math.round(columnWidth * 1.35),
-    itemKey: (item, index) =>
-      item?.type === "image"
-        ? item.id
-        : item?.type === "skeleton"
-          ? item.id
-          : index,
+    itemKey: (item, index) => item?.id ?? index,
     itemStyle: {
       margin: 0,
       padding: 0,

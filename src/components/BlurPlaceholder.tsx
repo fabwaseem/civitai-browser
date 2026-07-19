@@ -1,9 +1,14 @@
+import { isBlurhashValid } from "blurhash";
 import { Blurhash } from "react-blurhash";
+
+function PulseFallback() {
+  return <div className="absolute inset-0 animate-pulse bg-white/5" />;
+}
 
 /** Lightweight blurhash fill while the real image loads. */
 export function BlurPlaceholder({ hash }: { hash?: string | null }) {
-  if (!hash) {
-    return <div className="absolute inset-0 animate-pulse bg-white/5" />;
+  if (!hash || !isBlurhashValid(hash).result) {
+    return <PulseFallback />;
   }
 
   return (

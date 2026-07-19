@@ -68,8 +68,14 @@ export interface ResolveModelArgs {
   modelVersionId?: number;
   modelId?: number;
   name?: string;
+  /** Comfy/workflow filename — used to pick exact version and save path */
+  preferredFileName?: string;
+  /** Civitai file hash (AutoV2 / SHA256 / …) for exact lookup */
+  hash?: string;
   kind?: string;
   apiToken?: string;
+  /** Hugging Face token for mirrors / gated HF repos */
+  hfToken?: string;
 }
 
 export interface ResolvedModelFile {
@@ -92,6 +98,8 @@ export interface StartFileDownloadArgs {
   url: string;
   destPath: string;
   apiToken?: string;
+  /** Used when the download URL is on huggingface.co */
+  hfToken?: string;
 }
 
 export function startFileDownload(params: StartFileDownloadArgs) {
@@ -119,6 +127,22 @@ export interface ComfyModelsDirInfo {
 
 export function inspectComfyModelsDir(path: string) {
   return invoke<ComfyModelsDirInfo>("inspect_comfy_models_dir_cmd", { path });
+}
+
+export interface FindLocalModelArgs {
+  root: string;
+  fileName: string;
+  kind?: string;
+}
+
+export interface FindLocalModelResult {
+  found: boolean;
+  path: string | null;
+  relative: string | null;
+}
+
+export function findLocalModel(params: FindLocalModelArgs) {
+  return invoke<FindLocalModelResult>("find_local_model_cmd", { params });
 }
 
 export interface DownloadProgressEvent {

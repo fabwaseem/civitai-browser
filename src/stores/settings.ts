@@ -9,6 +9,8 @@ const STORE_FILE = "settings.json";
 export interface SettingsState {
   hydrated: boolean;
   apiToken: string;
+  /** Hugging Face token for gated / rate-limited model mirrors */
+  hfToken: string;
   /** Saved images & workflows folder */
   downloadDir: string;
   /** ComfyUI `models/` root — downloads go into checkpoints/loras/vae/… */
@@ -22,6 +24,7 @@ export interface SettingsState {
   blurNsfwFrom: BlurNsfwFrom;
   hydrate: () => Promise<void>;
   setApiToken: (apiToken: string) => Promise<void>;
+  setHfToken: (hfToken: string) => Promise<void>;
   setDownloadDir: (downloadDir: string) => Promise<void>;
   setComfyModelsDir: (comfyModelsDir: string) => Promise<void>;
   setMaxConcurrentDownloads: (n: number) => Promise<void>;
@@ -58,7 +61,7 @@ async function migrateComfyRoot(store: Awaited<ReturnType<typeof getStore>>) {
 
   for (const dir of [modelsDir, lorasDir, other]) {
     if (!dir) continue;
-    if (/[/\\](checkpoints|loras|vae|embeddings)[/\\]?$/i.test(dir)) {
+    if (/[/\\](checkpoints|diffusion_models|unet|loras|vae|embeddings|text_encoders|clip|upscale_models)[/\\]?$/i.test(dir)) {
       return parentDir(dir);
     }
   }
@@ -68,6 +71,7 @@ async function migrateComfyRoot(store: Awaited<ReturnType<typeof getStore>>) {
 export const useSettingsStore = create<SettingsState>((set) => ({
   hydrated: false,
   apiToken: "",
+  hfToken: "",
   downloadDir: "",
   comfyModelsDir: "",
   maxConcurrentDownloads: 3,
@@ -79,6 +83,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     try {
       const store = await getStore();
       const apiToken = (await store.get<string>("apiToken")) ?? "";
+      const hfToken = (await store.get<string>("hfToken")) ?? "";
       const downloadDir = (await store.get<string>("downloadDir")) ?? "";
       const comfyModelsDir = await migrateComfyRoot(store);
       if (comfyModelsDir && !(await store.get<string>("comfyModelsDir"))) {
@@ -101,6 +106,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
           : "Mature";
       set({
         apiToken,
+        hfToken,
         downloadDir,
         comfyModelsDir,
         maxConcurrentDownloads,
@@ -117,6 +123,10 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   setApiToken: async (apiToken) => {
     set({ apiToken });
     await persist("apiToken", apiToken);
+  },
+  setHfToken: async (hfToken) => {
+    set({ hfToken });
+    await persist("hfToken", hfToken);
   },
   setDownloadDir: async (downloadDir) => {
     set({ downloadDir });
@@ -151,9 +161,12 @@ export const useSettingsStore = create<SettingsState>((set) => ({
 
 const KIND_SUBDIR: Record<string, string> = {
   checkpoint: "checkpoints",
+  diffusion: "diffusion_models",
+  clip: "text_encoders",
   lora: "loras",
   embedding: "embeddings",
   vae: "vae",
+  upscale: "upscale_models",
 };
 
 /** Resolve download folder for a resource kind under the ComfyUI models root. */

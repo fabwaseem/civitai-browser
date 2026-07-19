@@ -60,6 +60,7 @@ export interface DownloadJob {
   version?: string;
   modelId?: number;
   modelVersionId?: number;
+  hash?: string;
   status: DownloadStatus;
   downloaded: number;
   total: number | null;
@@ -143,7 +144,9 @@ async function runJob(jobId: string) {
   const job = get().jobs.find((j) => j.id === jobId);
   if (!job) return;
 
-  const apiToken = useSettingsStore.getState().apiToken || undefined;
+  const { apiToken: civitaiToken, hfToken } = useSettingsStore.getState();
+  const apiToken = civitaiToken || undefined;
+  const hfTokenOpt = hfToken || undefined;
 
   try {
     updateJob(set, jobId, {
@@ -169,8 +172,11 @@ async function runJob(jobId: string) {
         modelVersionId: job.modelVersionId,
         modelId: job.modelId,
         name: job.name,
+        preferredFileName: job.name,
+        hash: job.hash,
         kind: job.kind,
         apiToken,
+        hfToken: hfTokenOpt,
       });
     }
 
@@ -195,7 +201,7 @@ async function runJob(jobId: string) {
       modelVersionId: resolved.modelVersionId || job.modelVersionId,
       total:
         resolved.sizeKb != null ? Math.round(resolved.sizeKb * 1024) : job.total,
-      name: resolved.modelName || job.name,
+      // Keep workflow filename as the job label; store Civitai version name separately
       version: resolved.versionName || job.version,
     });
 
@@ -204,6 +210,7 @@ async function runJob(jobId: string) {
       url: resolved.downloadUrl,
       destPath: destNormalized,
       apiToken,
+      hfToken: hfTokenOpt,
     });
 
     const current = get().jobs.find((j) => j.id === jobId);
@@ -305,11 +312,31 @@ export const useDownloadStore = create<DownloadsState>((set, get) => ({
   enqueueResource: async (resource, fromEl) => {
     await get().ensureListener();
 
-    if (!useSettingsStore.getState().comfyModelsDir) {
+    const settings = useSettingsStore.getState();
+    if (!settings.comfyModelsDir) {
       const { useUiStore } = await import("@/stores/ui");
       notify.modelsFolderRequired();
       useUiStore.getState().openSettings("models");
       return;
+    }
+
+    try {
+      const { findLocalModel } = await import("@/api/tauri");
+      const local = await findLocalModel({
+        root: settings.comfyModelsDir,
+        fileName: resource.name,
+        kind: resource.kind,
+      });
+      if (local.found) {
+        notify.success(
+          local.relative
+            ? `Already installed · ${local.relative}`
+            : `Already installed · ${resource.name}`,
+        );
+        return;
+      }
+    } catch {
+      /* proceed with download if lookup fails */
     }
 
     const origin = (() => {
@@ -360,6 +387,7 @@ export const useDownloadStore = create<DownloadsState>((set, get) => ({
       version: resource.version,
       modelId: resource.modelId,
       modelVersionId: resource.modelVersionId,
+      hash: resource.hash,
       status: "queued",
       downloaded: 0,
       total: null,

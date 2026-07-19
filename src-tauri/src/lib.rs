@@ -10,7 +10,10 @@ use cache::{
     PreviewImageParams, SaveImageParams,
 };
 use civitai::{fetch_images, FetchImagesParams, ImagesResponse};
-use comfy::{inspect_comfy_models_dir, ComfyModelsDirInfo};
+use comfy::{
+    find_local_model, inspect_comfy_models_dir, ComfyModelsDirInfo, FindLocalModelParams,
+    FindLocalModelResult,
+};
 use download::{
     resolve_model_file, start_file_download, DownloadManager, ResolveModelParams,
     ResolvedModelFile, StartFileDownloadParams,
@@ -111,6 +114,11 @@ fn inspect_comfy_models_dir_cmd(path: String) -> AppResult<ComfyModelsDirInfo> {
     inspect_comfy_models_dir(path)
 }
 
+#[tauri::command]
+fn find_local_model_cmd(params: FindLocalModelParams) -> AppResult<FindLocalModelResult> {
+    find_local_model(params)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -137,7 +145,8 @@ pub fn run() {
             start_file_download_cmd,
             cancel_file_download_cmd,
             clear_download_partial_cmd,
-            inspect_comfy_models_dir_cmd
+            inspect_comfy_models_dir_cmd,
+            find_local_model_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -14,6 +14,7 @@ import type {
 } from "./types";
 import { useFilterStore } from "@/stores/filters";
 import { useSettingsStore } from "@/stores/settings";
+import { tagsParam } from "@/lib/imageTags";
 
 const PAGE_SIZE = 200;
 const TARGET_VISIBLE = 60;
@@ -41,6 +42,7 @@ export function buildFetchParams(
     modelId: parseOptionalInt(filters.modelId),
     modelVersionId: parseOptionalInt(filters.modelVersionId),
     baseModels: filters.baseModels.trim() || undefined,
+    tags: tagsParam(filters.tagIds),
     apiToken: apiToken || undefined,
   };
 }
@@ -103,6 +105,7 @@ export function useImagesQuery() {
       filters.modelId,
       filters.modelVersionId,
       filters.baseModels,
+      filters.tagIds.join(","),
       filters.workflowMode,
       apiToken,
     ],

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { FilterBar } from "@/components/FilterBar";
 import { Gallery } from "@/components/Gallery";
 import { GallerySkeleton } from "@/components/GallerySkeleton";
 import { GalleryError } from "@/components/GalleryError";
+import { ImageLightbox } from "@/components/ImageLightbox";
 import { DetailPanel } from "@/components/DetailPanel";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { DownloadsPanel } from "@/components/DownloadsPanel";
@@ -41,10 +43,13 @@ function BrowserShell() {
   const setSelectedId = useUiStore((s) => s.setSelectedId);
 
   const [selected, setSelected] = useState<CivitaiImage | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState(-1);
   const downloadsOpen = useDownloadStore((s) => s.panelOpen);
   const setDownloadsOpen = useDownloadStore((s) => s.setPanelOpen);
   const ensureDownloadListener = useDownloadStore((s) => s.ensureListener);
   const openSettings = useUiStore((s) => s.openSettings);
+
+  const lightboxOpen = lightboxIndex >= 0;
 
   useEffect(() => {
     void (async () => {
@@ -80,6 +85,7 @@ function BrowserShell() {
         filters.modelId,
         filters.modelVersionId,
         filters.baseModels,
+        filters.tagIds.join(","),
         filters.workflowMode,
       ].join("|"),
     [filters],
@@ -88,6 +94,7 @@ function BrowserShell() {
   useEffect(() => {
     setSelected(null);
     setSelectedId(null);
+    setLightboxIndex(-1);
   }, [layoutKey, setSelectedId]);
 
   // Keep detail panel image object in sync when the list refreshes
@@ -100,10 +107,32 @@ function BrowserShell() {
     if (match) setSelected(match);
   }, [images, selectedId]);
 
+  // Clamp lightbox index if the list shrinks while open
+  useEffect(() => {
+    if (lightboxIndex < 0) return;
+    if (images.length === 0) {
+      setLightboxIndex(-1);
+      return;
+    }
+    if (lightboxIndex >= images.length) {
+      setLightboxIndex(images.length - 1);
+    }
+  }, [images.length, lightboxIndex]);
+
   function handleSelect(image: CivitaiImage) {
     setSelected(image);
     setSelectedId(image.id);
     prepareSelected(image);
+  }
+
+  function handleOpenLightbox(image: CivitaiImage) {
+    const idx = images.findIndex((img) => img.id === image.id);
+    if (idx < 0) return;
+    setLightboxIndex(idx);
+  }
+
+  function handleLightboxIndexChange(next: number) {
+    setLightboxIndex(next);
   }
 
   if (!ready) {
@@ -135,29 +164,32 @@ function BrowserShell() {
           />
 
           <main className="min-h-0 flex-1">
-            {query.isLoading && images.length === 0 ? (
-              <div className="h-full overflow-hidden">
-                <GallerySkeleton viewMode={viewMode} />
-              </div>
-            ) : query.isError && images.length === 0 ? (
-              <GalleryError
-                error={query.error}
-                busy={query.isFetching}
-                onRetry={() => void query.refetch()}
-              />
-            ) : (
-              <Gallery
-                images={images}
-                viewMode={viewMode}
-                layoutKey={layoutKey}
-                hasNextPage={!!query.hasNextPage}
-                isFetchingNextPage={query.isFetchingNextPage}
-                onLoadMore={() => void query.fetchNextPage()}
-                onSelect={handleSelect}
-                onDragStart={beginDrag}
-                onHover={prefetchImage}
-              />
-            )}
+            <AppErrorBoundary key={layoutKey} label="Gallery crashed">
+              {query.isLoading && images.length === 0 ? (
+                <div className="h-full overflow-hidden">
+                  <GallerySkeleton viewMode={viewMode} />
+                </div>
+              ) : query.isError && images.length === 0 ? (
+                <GalleryError
+                  error={query.error}
+                  busy={query.isFetching}
+                  onRetry={() => void query.refetch()}
+                />
+              ) : (
+                <Gallery
+                  images={images}
+                  viewMode={viewMode}
+                  layoutKey={layoutKey}
+                  hasNextPage={!!query.hasNextPage}
+                  isFetchingNextPage={query.isFetchingNextPage}
+                  onLoadMore={() => void query.fetchNextPage()}
+                  onSelect={handleSelect}
+                  onOpenLightbox={handleOpenLightbox}
+                  onDragStart={beginDrag}
+                  onHover={prefetchImage}
+                />
+              )}
+            </AppErrorBoundary>
           </main>
         </section>
 
@@ -170,6 +202,19 @@ function BrowserShell() {
           onDragStart={beginDrag}
         />
       </div>
+
+      <ImageLightbox
+        images={images}
+        index={lightboxIndex}
+        open={lightboxOpen}
+        onClose={() => setLightboxIndex(-1)}
+        onIndexChange={handleLightboxIndexChange}
+        onNearEnd={() => {
+          if (query.hasNextPage && !query.isFetchingNextPage) {
+            void query.fetchNextPage();
+          }
+        }}
+      />
 
       <SettingsDialog />
       <DownloadsPanel open={downloadsOpen} onOpenChange={setDownloadsOpen} />

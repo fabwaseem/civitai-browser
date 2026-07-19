@@ -169,4 +169,48 @@ div[role="status"] {
   font-family: var(--font-sans);
 }
 
+/* yet-another-react-lightbox — mint glass chrome */
+.yarl__portal {
+  font-family: var(--font-sans);
+  --yarl__color_backdrop: rgba(4, 8, 7, 0.94);
+  --yarl__color_button: rgba(238, 251, 244, 0.78);
+  --yarl__color_button_active: #5ef0b0;
+  --yarl__thumbnails_thumbnail_border: transparent;
+  --yarl__thumbnails_thumbnail_active_border_color: #5ef0b0;
+  --yarl__portal_zindex: 10000;
+}
+
+.yarl__button {
+  border-radius: 8px;
+  transition: color 0.15s ease, background-color 0.15s ease, transform 0.15s ease;
+}
+
+.yarl__button:hover:not(:disabled) {
+  background-color: rgba(94, 240, 176, 0.12);
+}
+
+.yarl__thumbnails_thumbnail {
+  opacity: 0.55;
+  transition:
+    opacity 0.18s ease,
+    outline-color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.yarl__thumbnails_thumbnail:hover {
+  opacity: 0.85;
+}
+
+.yarl__thumbnails_thumbnail_active {
+  opacity: 1;
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.yarl__counter {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: rgba(238, 251, 244, 0.7);
+}
+
 
