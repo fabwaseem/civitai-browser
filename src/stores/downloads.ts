@@ -4,13 +4,14 @@ import type { UsedResource, UsedResourceKind } from "@/api/classifier";
 import {
   cancelFileDownload,
   clearDownloadPartial,
+  findLocalModel,
   resolveModelFile,
   startFileDownload,
   type DownloadProgressEvent,
   type ResolvedModelFile,
 } from "@/api/tauri";
 import { dirForKind, useSettingsStore } from "@/stores/settings";
-import { joinPath } from "@/lib/utils";
+import { fileBasename, joinPath, sameBasename } from "@/lib/utils";
 import { notify } from "@/lib/toast";
 
 export type DownloadStatus =
@@ -27,6 +28,26 @@ export function formatDownloadError(raw: string): string {
   const text = raw.trim();
   if (!text || text === "CANCELLED") return "";
 
+  if (/download cancelled/i.test(text)) return "";
+
+  if (/401|unauthorized/i.test(text)) {
+    return "This file needs a token — add it in Settings.";
+  }
+
+  // Resolve misses: Civitai/HF search noise → one clear line
+  if (
+    /no civitai model found/i.test(text) ||
+    /no hugging ?face/i.test(text) ||
+    /none match/i.test(text) ||
+    /no version of this model matches/i.test(text) ||
+    /no downloadable files/i.test(text) ||
+    /file has no downloadurl/i.test(text) ||
+    /need modelversionid, hash, modelid, or a name/i.test(text) ||
+    /multiple versions exist/i.test(text)
+  ) {
+    return "Model not found";
+  }
+
   const jsonStart = text.indexOf("{");
   if (jsonStart >= 0) {
     try {
@@ -36,20 +57,23 @@ export function formatDownloadError(raw: string): string {
       };
       const msg = (parsed.message || parsed.error || "").trim();
       if (/401|unauthorized/i.test(text)) {
-        return msg && msg !== "Unauthorized"
-          ? `${msg} Add your Civitai API token in Settings.`
-          : "This file requires authentication. Add your Civitai API token in Settings.";
+        return "This file needs a token — add it in Settings.";
       }
-      if (msg && msg !== "Unauthorized" && msg !== "Error") return msg;
+      if (msg && msg !== "Unauthorized" && msg !== "Error") {
+        return formatDownloadError(msg);
+      }
     } catch {
       /* fall through */
     }
   }
 
-  if (/401|unauthorized/i.test(text)) {
-    return "This file requires authentication. Add your Civitai API token in Settings.";
+  // Keep short; drop trailing technical chains
+  if (text.length > 80) {
+    const first = text.split(/[.\n]/)[0]?.trim();
+    if (first && first.length <= 80) return first;
+    return "Download failed";
   }
-  if (/download cancelled/i.test(text)) return "";
+
   return text;
 }
 
@@ -78,19 +102,42 @@ export interface FlyBurst {
   y: number;
 }
 
+/** Same weights found under a different basename than the workflow expects. */
+export interface AltInstallPrompt {
+  resource: UsedResource;
+  workflowName: string;
+  localFileName: string;
+  relative: string | null;
+  path: string | null;
+  from?: { x: number; y: number } | null;
+}
+
+export interface LocalResourceMatch {
+  relative: string | null;
+  path: string | null;
+  /** Set when the on-disk basename differs from the workflow name */
+  asName?: string;
+}
+
 interface DownloadsState {
   jobs: DownloadJob[];
   panelOpen: boolean;
   listening: boolean;
   flyBurst: FlyBurst | null;
   badgePulse: number;
+  altInstallPrompt: AltInstallPrompt | null;
   setPanelOpen: (open: boolean) => void;
   clearFlyBurst: () => void;
+  dismissAltInstall: () => void;
   ensureListener: () => Promise<void>;
+  /** Look up workflow name, then hash-resolved source name if needed */
+  probeLocalResource: (resource: UsedResource) => Promise<LocalResourceMatch | null>;
   enqueueResource: (
     resource: UsedResource,
     fromEl?: HTMLElement | { x: number; y: number } | null,
+    opts?: { forceWorkflowName?: boolean },
   ) => Promise<void>;
+  confirmDownloadAsWorkflow: () => Promise<void>;
   pauseJob: (id: string) => Promise<void>;
   resumeJob: (id: string) => Promise<void>;
   cancelJob: (id: string) => Promise<void>;
@@ -102,6 +149,8 @@ interface DownloadsState {
 
 let unlisten: UnlistenFn | null = null;
 let pumping = false;
+
+const resolveCache = new Map<string, ResolvedModelFile>();
 
 function uid() {
   return `dl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -115,6 +164,60 @@ function updateJob(
   set((s) => ({
     jobs: s.jobs.map((j) => (j.id === id ? { ...j, ...patch } : j)),
   }));
+}
+
+function resolveCacheKey(resource: UsedResource): string | null {
+  if (resource.hash?.trim()) return `h:${resource.hash.trim().toLowerCase()}`;
+  if (resource.modelVersionId != null) return `v:${resource.modelVersionId}`;
+  return null;
+}
+
+async function resolveForResource(
+  resource: UsedResource,
+): Promise<ResolvedModelFile | null> {
+  const key = resolveCacheKey(resource);
+  if (!key) return null;
+  const hit = resolveCache.get(key);
+  if (hit) return hit;
+
+  const { apiToken: civitaiToken, hfToken } = useSettingsStore.getState();
+  try {
+    const resolved = await resolveModelFile({
+      modelVersionId: resource.modelVersionId,
+      modelId: resource.modelId,
+      name: resource.name,
+      preferredFileName: resource.name,
+      hash: resource.hash,
+      kind: resource.kind,
+      apiToken: civitaiToken || undefined,
+      hfToken: hfToken || undefined,
+    });
+    resolveCache.set(key, resolved);
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+
+function originFrom(
+  fromEl?: HTMLElement | { x: number; y: number } | null,
+): { x: number; y: number } | null {
+  if (fromEl instanceof HTMLElement) {
+    const r = fromEl.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) {
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    }
+  }
+  if (
+    fromEl &&
+    typeof fromEl === "object" &&
+    "x" in fromEl &&
+    "y" in fromEl &&
+    typeof (fromEl as { x: unknown }).x === "number"
+  ) {
+    return fromEl as { x: number; y: number };
+  }
+  return null;
 }
 
 async function wipePartial(destPath?: string) {
@@ -163,6 +266,7 @@ async function runJob(jobId: string) {
         modelName: job.name,
         versionName: job.version ?? "",
         fileName: job.fileName,
+        sourceFileName: job.fileName,
         sizeKb: job.total != null ? job.total / 1024 : null,
         downloadUrl: job.downloadUrl,
         air: null,
@@ -259,9 +363,51 @@ export const useDownloadStore = create<DownloadsState>((set, get) => ({
   listening: false,
   flyBurst: null,
   badgePulse: 0,
+  altInstallPrompt: null,
 
   setPanelOpen: (panelOpen) => set({ panelOpen }),
   clearFlyBurst: () => set({ flyBurst: null }),
+  dismissAltInstall: () => set({ altInstallPrompt: null }),
+
+  probeLocalResource: async (resource) => {
+    const root = useSettingsStore.getState().comfyModelsDir;
+    if (!root) return null;
+
+    try {
+      const exact = await findLocalModel({
+        root,
+        fileName: resource.name,
+        kind: resource.kind,
+      });
+      if (exact.found) {
+        return { relative: exact.relative, path: exact.path };
+      }
+    } catch {
+      /* continue */
+    }
+
+    // Hash / version id → canonical source filename may already be on disk
+    if (!resource.hash && resource.modelVersionId == null) return null;
+    const resolved = await resolveForResource(resource);
+    if (!resolved?.sourceFileName) return null;
+    if (sameBasename(resolved.sourceFileName, resource.name)) return null;
+
+    try {
+      const alt = await findLocalModel({
+        root,
+        fileName: resolved.sourceFileName,
+        kind: resource.kind,
+      });
+      if (!alt.found) return null;
+      return {
+        relative: alt.relative,
+        path: alt.path,
+        asName: fileBasename(resolved.sourceFileName),
+      };
+    } catch {
+      return null;
+    }
+  },
 
   ensureListener: async () => {
     if (get().listening) return;
@@ -309,7 +455,7 @@ export const useDownloadStore = create<DownloadsState>((set, get) => ({
     set({ listening: true });
   },
 
-  enqueueResource: async (resource, fromEl) => {
+  enqueueResource: async (resource, fromEl, opts) => {
     await get().ensureListener();
 
     const settings = useSettingsStore.getState();
@@ -320,43 +466,32 @@ export const useDownloadStore = create<DownloadsState>((set, get) => ({
       return;
     }
 
-    try {
-      const { findLocalModel } = await import("@/api/tauri");
-      const local = await findLocalModel({
-        root: settings.comfyModelsDir,
-        fileName: resource.name,
-        kind: resource.kind,
-      });
-      if (local.found) {
+    const origin = originFrom(fromEl);
+
+    if (!opts?.forceWorkflowName) {
+      const match = await get().probeLocalResource(resource);
+      if (match && !match.asName) {
         notify.success(
-          local.relative
-            ? `Already installed · ${local.relative}`
+          match.relative
+            ? `Already installed · ${match.relative}`
             : `Already installed · ${resource.name}`,
         );
         return;
       }
-    } catch {
-      /* proceed with download if lookup fails */
+      if (match?.asName) {
+        set({
+          altInstallPrompt: {
+            resource,
+            workflowName: fileBasename(resource.name),
+            localFileName: match.asName,
+            relative: match.relative,
+            path: match.path,
+            from: origin,
+          },
+        });
+        return;
+      }
     }
-
-    const origin = (() => {
-      if (fromEl instanceof HTMLElement) {
-        const r = fromEl.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0) {
-          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-        }
-      }
-      if (
-        fromEl &&
-        typeof fromEl === "object" &&
-        "x" in fromEl &&
-        "y" in fromEl &&
-        typeof (fromEl as { x: unknown }).x === "number"
-      ) {
-        return fromEl as { x: number; y: number };
-      }
-      return null;
-    })();
 
     const dup = get().jobs.find(
       (j) =>
@@ -376,6 +511,7 @@ export const useDownloadStore = create<DownloadsState>((set, get) => ({
       set((s) => ({
         flyBurst: fly ?? s.flyBurst,
         badgePulse: s.badgePulse + 1,
+        altInstallPrompt: null,
       }));
       return;
     }
@@ -398,6 +534,7 @@ export const useDownloadStore = create<DownloadsState>((set, get) => ({
       jobs: [job, ...s.jobs],
       badgePulse: s.badgePulse + 1,
       flyBurst: fly,
+      altInstallPrompt: null,
     }));
     const short =
       resource.name.length > 36
@@ -405,6 +542,15 @@ export const useDownloadStore = create<DownloadsState>((set, get) => ({
         : resource.name;
     notify.success(`Queued ${short}`);
     get().pump();
+  },
+
+  confirmDownloadAsWorkflow: async () => {
+    const prompt = get().altInstallPrompt;
+    if (!prompt) return;
+    set({ altInstallPrompt: null });
+    await get().enqueueResource(prompt.resource, prompt.from, {
+      forceWorkflowName: true,
+    });
   },
 
   pauseJob: async (id) => {

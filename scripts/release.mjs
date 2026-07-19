@@ -225,32 +225,62 @@ function ensureGh() {
   console.log(`Release target: ${(probe.stdout || "").trim()}`);
 }
 
-function ensureSigningEnv() {
-  // Tauri build reads TAURI_SIGNING_PRIVATE_KEY (file path OR key contents).
-  // PATH-only is not enough for `tauri build` updater artifacts.
-  const existing =
-    process.env.TAURI_SIGNING_PRIVATE_KEY ||
-    process.env.TAURI_SIGNING_PRIVATE_KEY_PATH;
-  const keyPath = existing && fs.existsSync(existing) ? existing : DEFAULT_KEY;
+function loadPrivateKeyMaterial(keyPath) {
+  const raw = fs.readFileSync(keyPath);
+  const text = raw.toString("utf8").trim();
 
-  if (!process.env.TAURI_SIGNING_PRIVATE_KEY) {
-    if (fs.existsSync(keyPath)) {
-      process.env.TAURI_SIGNING_PRIVATE_KEY = keyPath;
-      process.env.TAURI_SIGNING_PRIVATE_KEY_PATH = keyPath;
-      console.log(`Using signing key: ${keyPath}`);
-    } else {
-      fail(
-        [
-          "Missing Tauri updater signing key.",
-          `Expected: ${DEFAULT_KEY}`,
-          "Or set TAURI_SIGNING_PRIVATE_KEY to the key path/contents",
-          "Generate once:",
-          "  pnpm tauri signer generate -w %USERPROFILE%\\.tauri\\civitai-browser.key",
-        ].join("\n"),
-      );
-    }
+  // Newer Tauri CLI expects the private key string to be base64(minisign file),
+  // matching how pubkey is stored in tauri.conf.json — NOT the raw minisign text.
+  // Raw files start with `untrusted comment: …` and fail with:
+  //   Invalid symbol 32, offset 9
+  if (text.startsWith("untrusted comment:")) {
+    return Buffer.from(raw).toString("base64");
+  }
+
+  // Already a single-line base64 blob (or inline env value)
+  const body = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("");
+  if (!body) {
+    fail(`Signing key file is empty: ${keyPath}`);
+  }
+  return body;
+}
+
+function ensureSigningEnv() {
+  // Prefer an existing path, then default ~/.tauri/civitai-browser.key
+  const configured =
+    process.env.TAURI_SIGNING_PRIVATE_KEY ||
+    process.env.TAURI_SIGNING_PRIVATE_KEY_PATH ||
+    "";
+  const keyPath =
+    configured && fs.existsSync(configured) ? configured : DEFAULT_KEY;
+
+  if (configured && !fs.existsSync(configured) && configured.length > 80) {
+    // Inline key contents from env — normalize if raw minisign text was pasted
+    const trimmed = configured.trim();
+    process.env.TAURI_SIGNING_PRIVATE_KEY = trimmed.startsWith(
+      "untrusted comment:",
+    )
+      ? Buffer.from(trimmed, "utf8").toString("base64")
+      : trimmed;
+    console.log("Using TAURI_SIGNING_PRIVATE_KEY from environment (inline)");
+  } else if (fs.existsSync(keyPath)) {
+    process.env.TAURI_SIGNING_PRIVATE_KEY = loadPrivateKeyMaterial(keyPath);
+    process.env.TAURI_SIGNING_PRIVATE_KEY_PATH = keyPath;
+    console.log(`Using signing key file: ${keyPath}`);
   } else {
-    console.log("Using TAURI_SIGNING_PRIVATE_KEY from environment");
+    fail(
+      [
+        "Missing Tauri updater signing key.",
+        `Expected: ${DEFAULT_KEY}`,
+        "Or set TAURI_SIGNING_PRIVATE_KEY to the key path/contents",
+        "Generate once:",
+        "  pnpm tauri signer generate -w %USERPROFILE%\\.tauri\\civitai-browser.key",
+      ].join("\n"),
+    );
   }
 
   // Encrypted keys need this set (empty string if generated with no password)

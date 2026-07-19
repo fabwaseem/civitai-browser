@@ -32,3 +32,14 @@ export function joinPath(dir: string, fileName: string) {
   return `${base}${sep}${fileName}`;
 }
 
+/** Basename only (last path segment). */
+export function fileBasename(name: string) {
+  const trimmed = name.trim();
+  const parts = trimmed.split(/[/\\]/);
+  return parts[parts.length - 1] || trimmed;
+}
+
+export function sameBasename(a: string, b: string) {
+  return fileBasename(a).toLowerCase() === fileBasename(b).toLowerCase();
+}
+

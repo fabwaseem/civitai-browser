@@ -181,7 +181,10 @@ pub struct ResolvedModelFile {
     pub model_version_id: i64,
     pub model_name: String,
     pub version_name: String,
+    /// Destination filename (often the workflow/Comfy name).
     pub file_name: String,
+    /// Filename on the source (Civitai/HF) before any preferred rename.
+    pub source_file_name: String,
     pub size_kb: Option<f64>,
     pub download_url: String,
     pub air: Option<String>,
@@ -613,12 +616,14 @@ async fn probe_download_url(url: &str, token: Option<&str>) -> UrlProbe {
 }
 
 fn hf_resolved(file_name: &str, url: String, label: &str, size_kb: Option<f64>) -> ResolvedModelFile {
+    let name = sanitize_filename(basename_only(file_name));
     ResolvedModelFile {
         model_id: None,
         model_version_id: 0,
         model_name: label.to_string(),
         version_name: "huggingface".into(),
-        file_name: sanitize_filename(basename_only(file_name)),
+        file_name: name.clone(),
+        source_file_name: name,
         size_kb,
         download_url: url,
         air: None,
@@ -879,7 +884,7 @@ fn resolve_from_version_json(
         .to_string();
 
     // Prefer workflow/Comfy filename so the file is findable by the graph.
-    let civitai_name = file
+    let source_file_name = file
         .get("name")
         .and_then(|v| v.as_str())
         .map(sanitize_filename)
@@ -892,9 +897,9 @@ fn resolve_from_version_json(
         .filter(|s| {
             // Keep preferred only when it looks like a real model file, or
             // stems match the Civitai file (avoid saving as "version-123").
-            has_model_extension(s) || names_equivalent(s, &civitai_name)
+            has_model_extension(s) || names_equivalent(s, &source_file_name)
         })
-        .unwrap_or(civitai_name);
+        .unwrap_or_else(|| source_file_name.clone());
 
     let size_kb = file.get("sizeKB").and_then(|v| v.as_f64());
     let air = version
@@ -908,6 +913,7 @@ fn resolve_from_version_json(
         model_name,
         version_name,
         file_name,
+        source_file_name,
         size_kb,
         download_url,
         air,

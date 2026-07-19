@@ -22,11 +22,14 @@ import {
   type UsedResource,
 } from "@/api/classifier";
 import { comfyExportArgs } from "@/api/comfyExport";
-import { findLocalModel, saveImage, writeTextFile } from "@/api/tauri";
+import { saveImage, writeTextFile } from "@/api/tauri";
 import type { CivitaiImage } from "@/api/types";
 import { shouldBlurNsfw } from "@/lib/nsfw";
 import { useSettingsStore } from "@/stores/settings";
-import { useDownloadStore } from "@/stores/downloads";
+import {
+  useDownloadStore,
+  type LocalResourceMatch,
+} from "@/stores/downloads";
 import { useNsfwRevealStore } from "@/stores/nsfwReveal";
 import { formatCount, cn } from "@/lib/utils";
 import { notify } from "@/lib/toast";
@@ -365,16 +368,17 @@ function formatWeight(weight: number) {
 
 function ResourceList({ items }: { items: UsedResource[] }) {
   const enqueueResource = useDownloadStore((s) => s.enqueueResource);
+  const probeLocalResource = useDownloadStore((s) => s.probeLocalResource);
   const jobs = useDownloadStore((s) => s.jobs);
   const comfyModelsDir = useSettingsStore((s) => s.comfyModelsDir);
   const completedPulse = useDownloadStore(
     (s) => s.jobs.filter((j) => j.status === "completed").length,
   );
   const [installed, setInstalled] = useState<
-    Record<string, { relative: string | null }>
+    Record<string, LocalResourceMatch>
   >({});
 
-  const itemsKey = items.map((i) => `${i.kind}|${i.name}`).join("\0");
+  const itemsKey = items.map((i) => `${i.kind}|${i.name}|${i.hash ?? ""}|${i.modelVersionId ?? ""}`).join("\0");
 
   useEffect(() => {
     if (!comfyModelsDir || items.length === 0) {
@@ -384,19 +388,13 @@ function ResourceList({ items }: { items: UsedResource[] }) {
     let cancelled = false;
     const snapshot = items;
     void (async () => {
-      const next: Record<string, { relative: string | null }> = {};
+      const next: Record<string, LocalResourceMatch> = {};
       await Promise.all(
         snapshot.map(async (item) => {
           const key = `${item.kind}|${item.name}`;
           try {
-            const result = await findLocalModel({
-              root: comfyModelsDir,
-              fileName: item.name,
-              kind: item.kind,
-            });
-            if (result.found) {
-              next[key] = { relative: result.relative };
-            }
+            const result = await probeLocalResource(item);
+            if (result) next[key] = result;
           } catch {
             /* ignore lookup failures */
           }
@@ -409,7 +407,7 @@ function ResourceList({ items }: { items: UsedResource[] }) {
     };
     // itemsKey captures identity; completedPulse refreshes after downloads
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [comfyModelsDir, itemsKey, completedPulse]);
+  }, [comfyModelsDir, itemsKey, completedPulse, probeLocalResource]);
 
   return (
     <ul className="space-y-1">
@@ -425,6 +423,7 @@ function ResourceList({ items }: { items: UsedResource[] }) {
               j.status === "downloading" ||
               j.status === "paused"),
         );
+        const exactInstall = !!local && !local.asName;
         return (
           <li
             key={`${item.kind}-${item.modelVersionId ?? ""}-${item.name}`}
@@ -464,7 +463,7 @@ function ResourceList({ items }: { items: UsedResource[] }) {
                   <ExternalLink className="h-3.5 w-3.5" />
                 </Button>
               )}
-              {local ? (
+              {exactInstall ? (
                 <span
                   className="grid h-7 w-7 shrink-0 place-items-center text-[var(--color-accent)]"
                   title={
@@ -481,9 +480,11 @@ function ResourceList({ items }: { items: UsedResource[] }) {
                   variant="ghost"
                   className="h-7 w-7 shrink-0"
                   title={
-                    active
-                      ? `Download ${active.status}`
-                      : "Download model file"
+                    local?.asName
+                      ? `Also on disk as ${local.asName}`
+                      : active
+                        ? `Download ${active.status}`
+                        : "Download model file"
                   }
                   disabled={
                     !!active &&
@@ -501,7 +502,7 @@ function ResourceList({ items }: { items: UsedResource[] }) {
                   <Download
                     className={cn(
                       "h-3.5 w-3.5",
-                      active && "text-[var(--color-accent)]",
+                      (active || local?.asName) && "text-[var(--color-accent)]",
                     )}
                   />
                 </Button>
@@ -512,11 +513,33 @@ function ResourceList({ items }: { items: UsedResource[] }) {
                 {item.version}
               </p>
             )}
-            {local?.relative && (
+            {local?.asName ? (
+              <p
+                className="-mt-0.5 truncate text-[10px] text-[var(--color-accent)]/90"
+                title={
+                  local.relative
+                    ? `On disk as ${local.asName} · ${local.relative}`
+                    : `On disk as ${local.asName}`
+                }
+              >
+                on disk as{" "}
+                <button
+                  type="button"
+                  className="font-mono underline decoration-[var(--color-accent)]/40 underline-offset-2 hover:decoration-[var(--color-accent)]"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(local.asName!).then(() => {
+                      notify.success("Filename copied — pick it in ComfyUI");
+                    });
+                  }}
+                >
+                  {local.asName}
+                </button>
+              </p>
+            ) : local?.relative ? (
               <p className="-mt-0.5 truncate text-[10px] text-[var(--color-accent)]/80">
                 {local.relative}
               </p>
-            )}
+            ) : null}
           </li>
         );
       })}

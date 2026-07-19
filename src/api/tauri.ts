@@ -83,7 +83,10 @@ export interface ResolvedModelFile {
   modelVersionId: number;
   modelName: string;
   versionName: string;
+  /** Destination / workflow filename */
   fileName: string;
+  /** Filename on Civitai/HF before preferred rename */
+  sourceFileName: string;
   sizeKb: number | null;
   downloadUrl: string;
   air: string | null;

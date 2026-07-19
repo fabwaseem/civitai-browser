@@ -404,9 +404,26 @@ function mergeResource(into: UsedResource, from: UsedResource): UsedResource {
 
 function pushUnique(list: UsedResource[], item: UsedResource) {
   const key = `${dedupeFamily(item.kind)}|${normalizeResourceKey(item.name)}`;
-  const idx = list.findIndex(
+  let idx = list.findIndex(
     (x) => `${dedupeFamily(x.kind)}|${normalizeResourceKey(x.name)}` === key,
   );
+  // Same Civitai version / file hash → merge even when the workflow renamed the file
+  if (idx < 0 && item.modelVersionId != null) {
+    idx = list.findIndex(
+      (x) =>
+        x.modelVersionId === item.modelVersionId &&
+        dedupeFamily(x.kind) === dedupeFamily(item.kind),
+    );
+  }
+  if (idx < 0 && item.hash) {
+    const h = item.hash.toLowerCase();
+    idx = list.findIndex(
+      (x) =>
+        !!x.hash &&
+        x.hash.toLowerCase() === h &&
+        dedupeFamily(x.kind) === dedupeFamily(item.kind),
+    );
+  }
   if (idx >= 0) {
     list[idx] = mergeResource(list[idx], item);
     return;
@@ -524,7 +541,7 @@ function resourcesFromCivitaiMeta(meta: Record<string, unknown>): UsedResource[]
     }
   }
 
-  // A1111-style hashes: { "model": "ABC…", "lora:name": "DEF…" }
+  // A1111-style hashes: { "model": "ABC…", "lora:name": "DEF…", "vae:name": "…" }
   const hashes = meta.hashes;
   if (isPlainObject(hashes)) {
     for (const [key, value] of Object.entries(hashes)) {
@@ -542,16 +559,21 @@ function resourcesFromCivitaiMeta(meta: Record<string, unknown>): UsedResource[]
         }
         continue;
       }
-      const loraMatch = key.match(/^lora:(.+)$/i);
-      if (loraMatch) {
-        const loraName = loraMatch[1];
+      const typed = key.match(
+        /^(lora|vae|unet|diffusion|clip|embedding|upscaler?|model):(.*)$/i,
+      );
+      if (typed) {
+        const kindHint = typed[1].toLowerCase();
+        const resName = typed[2].trim() || typed[1];
+        const kind = resolveResourceKind(kindHint, resName);
         const existing = out.find(
           (r) =>
-            r.kind === "lora" &&
-            normalizeResourceKey(r.name) === normalizeResourceKey(loraName),
+            dedupeFamily(r.kind) === dedupeFamily(kind) &&
+            (normalizeResourceKey(r.name) === normalizeResourceKey(resName) ||
+              (!!r.hash && r.hash.toLowerCase() === hash.toLowerCase())),
         );
         if (existing) existing.hash = existing.hash ?? hash;
-        else pushUnique(out, { kind: "lora", name: loraName, hash });
+        else pushUnique(out, { kind, name: resName, hash });
       }
     }
   }

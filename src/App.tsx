@@ -8,6 +8,7 @@ import { GalleryError } from "@/components/GalleryError";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { DetailPanel } from "@/components/DetailPanel";
 import { SettingsDialog } from "@/components/SettingsDialog";
+import { AltInstallDialog } from "@/components/AltInstallDialog";
 import { DownloadsPanel } from "@/components/DownloadsPanel";
 import { DownloadFlyLayer } from "@/components/DownloadFlyLayer";
 import { TitleBar } from "@/components/TitleBar";
@@ -217,6 +218,7 @@ function BrowserShell() {
       />
 
       <SettingsDialog />
+      <AltInstallDialog />
       <DownloadsPanel open={downloadsOpen} onOpenChange={setDownloadsOpen} />
     </div>
   );
